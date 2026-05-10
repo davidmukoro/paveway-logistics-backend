@@ -7,6 +7,7 @@ from datetime import timedelta
 from pydantic import ValidationError
 from django.core.exceptions import ValidationError
 from logistics.models import LogisticsPartner, Hub
+from django.db.models.functions import Lower
 
 # Create your models here.
 
@@ -292,6 +293,13 @@ class Pricing(models.Model):
         "setup.user", on_delete=models.SET_NULL, related_name="price_updator", null=True
     )
     updatedAt = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                Lower("subarea"), name="unique_subarea_case_insensitive"
+            )
+        ]
 
     def __str__(self):
         return f"${self.name}- ${self.price}"

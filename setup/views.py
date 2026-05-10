@@ -70,7 +70,7 @@ import requests
 from setup.utils import getCloudinaryPath
 from django.shortcuts import get_object_or_404
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-
+from rest_framework.decorators import action
 from rest_framework import permissions
 
 
@@ -1132,3 +1132,30 @@ class PricingViewSet(AuditedModelViewSet):
             serializer.save()  # 🔥 THIS FIXES IT
             return Response(serializer.data, status=201)
         return Response(serializer.errors, status=400)
+
+    @action(detail=False, methods=["post"], url_path="bulk-upload")
+    def bulk_upload(self, request):
+
+        data = request.data.get("data", [])
+
+        objs = []
+
+        for item in data:
+            objs.append(
+                Pricing(
+                    subarea=item.get("subarea"),
+                    price=item.get("price"),
+                    extrakg=item.get("extrakg"),
+                    pricetype=item.get("pricetype"),
+                    createdBy_id=item.get("createdBy"),
+                )
+            )
+            existing = Pricing.objects.filter(
+                subarea__iexact=item.get("subarea")
+            ).exists()
+
+            if existing:
+                continue
+        Pricing.objects.bulk_create(objs)
+
+        return Response({"detail": "Uploaded successfully"})

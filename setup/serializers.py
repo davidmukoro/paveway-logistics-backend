@@ -918,10 +918,26 @@ class AllowanceDeductionSerializer(serializers.ModelSerializer):
 
 
 class PricingSerializer(serializers.ModelSerializer):
+    created_user = serializers.CharField(source="createdBy.fullName", read_only=True)
+    updated_user = serializers.CharField(source="updatedBy.fullName", read_only=True)
+
     class Meta:
         model = Pricing
-        fields = "__all__"
+        fields = [
+            "id",
+            "subarea",
+            "price",
+            "extrakg",
+            "pricetype",
+            "createdBy",
+            "updatedBy",
+            "createdAt",
+            "updatedAt",
+            "created_user",
+            "updated_user",
+        ]
         extra_kwargs = {
             "createdAt": {"required": False},
             "updatedAt": {"required": False},
+            "updatedBy": {"required": False},
         }
