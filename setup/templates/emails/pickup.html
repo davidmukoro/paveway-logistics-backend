@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+  <body
+    style="
+      margin: 0;
+      padding: 0;
+      background: #f4f6f8;
+      font-family: Arial, sans-serif;
+    "
+  >
+    <div
+      style="
+        max-width: 600px;
+        margin: 30px auto;
+        background: #fff;
+        padding: 30px;
+        border-radius: 10px;
+      "
+    >
+      <h2 style="text-align: center; color: #1a73e8"> 🚚 Paveway Logistics </h2>
+
+      <p>Hello <strong>{{ receiver }}</strong>,</p>
+
+      <p>
+        Your item is now <strong>out for delivery</strong>. Please find your
+        delivery details below:
+      </p>
+
+      <!-- OTP -->
+      <div style="text-align: center; margin: 25px 0">
+        <p style="margin-bottom: 5px; margin-top: 2px">Delivery OTP</p>
+        <span
+          style="
+            font-size: 32px;
+            font-weight: bold;
+            color: #fff;
+            background: #1a73e8;
+            padding: 12px 30px;
+            border-radius: 8px;
+            letter-spacing: 4px;
+          "
+        >
+          {{ otp }}
+        </span>
+      </div>
+
+      <!-- ITEM DETAILS -->
+      <h4 style="color: #333">📦 Item Details</h4>
+      <ul style="line-height: 1.8; color: #555">
+        <li><strong>WayBill:</strong> {{ item.waybillNo }}</li>
+        <li><strong>Description:</strong> {{ item.description }}</li>
+        <li><strong>Weight:</strong> {{ item.weight }}kg</li>
+        <li><strong>Delivery Address:</strong> {{ item.delivery_address }}</li>
+      </ul>
+
+      <!-- DISPATCHER -->
+      <h4 style="color: #333">👨‍✈️ Dispatcher Details</h4>
+      <ul style="line-height: 1.8; color: #555">
+        <li><strong>Name:</strong> {{ agent_name }}</li>
+        <li><strong>Phone:</strong> {{ agent_phone }}</li>
+      </ul>
+
+      <!-- VEHICLE -->
+      <h4 style="color: #333">🚗 Vehicle Details</h4>
+      <ul style="line-height: 1.8; color: #555">
+        <li><strong>Vehicle No:</strong> {{ vehicle_no }}</li>
+        <li><strong>Tag No:</strong> {{ vehicle_tag }}</li>
+      </ul>
+
+      <p style="margin-top: 20px; color: #d9534f">
+        ⚠️ Do NOT share your OTP with anyone except the dispatcher upon
+        delivery.
+      </p>
+
+      <hr />
+
+      <p style="font-size: 12px; color: #aaa; text-align: center">
+        © {{ year }} Paveway Logistics. All rights reserved.
+      </p>
+    </div>
+  </body>
+</html>
