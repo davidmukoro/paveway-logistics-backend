@@ -5,14 +5,32 @@ from rest_framework.decorators import api_view
 from rest_framework import status
 from setup.utils import AuditedModelViewSet
 from .services.vendor_service import fetch_vendor_orders
-from .models import (DispatchHistory,HubTransfer, Order, OrderItem, WarehouseScan,
-                     LogisticsPartner,driverpickup,Hub,AgentLocation,HubTransferItem,HubScan)
-from .serializers import (BulkDispatchSerializer, OrderSerializer,WarehouseScanSerializer,
-                          HubSerializer,PartnerSerializer,DispatchSerializer,
-                          DriverpickupSerializer,HubTransferSerializer,HubStoreSerializer
+from .models import (
+    DispatchHistory,
+    HubTransfer,
+    Order,
+    OrderItem,
+    WarehouseScan,
+    LogisticsPartner,
+    driverpickup,
+    Hub,
+    AgentLocation,
+    HubTransferItem,
+    HubScan,
+)
+from .serializers import (
+    BulkDispatchSerializer,
+    OrderSerializer,
+    WarehouseScanSerializer,
+    HubSerializer,
+    PartnerSerializer,
+    DispatchSerializer,
+    DriverpickupSerializer,
+    HubTransferSerializer,
+    HubStoreSerializer,
 )
 from django.utils import timezone
-from .utils import generate_delivery_code, generate_waybill_no, normalize_vendor_payload 
+from .utils import generate_delivery_code, generate_waybill_no, normalize_vendor_payload
 from setup.models import User
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -23,8 +41,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from rest_framework import status,permissions
-from .serializers import VehicleSerializer,DispatcherSerializer
+from rest_framework import status, permissions
+from .serializers import VehicleSerializer, DispatcherSerializer
+
 # from rest_framework.views import APIView
 from django.utils import timezone
 from logistics.models import Dispatch, Vehicle
@@ -34,11 +53,10 @@ from django.template.loader import render_to_string
 from rest_framework.response import Response
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Count,F,Q,OuterRef, Subquery
+from django.db.models import Count, F, Q, OuterRef, Subquery
 from collections import defaultdict
 from rest_framework import status as http_status
 from django.http import JsonResponse
-
 
 
 class CreateOrderView(APIView):
@@ -54,7 +72,7 @@ class CreateOrderView(APIView):
             # Non-staff → return only user's orders (vendor_id = user.id)
             orders = Order.objects.filter(vendor_id=user.id)
 
-        orders = orders.prefetch_related('items').order_by('-created_at')
+        orders = orders.prefetch_related("items").order_by("-created_at")
         serializer = OrderSerializer(orders, many=True)
 
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -62,23 +80,23 @@ class CreateOrderView(APIView):
     def post(self, request):
         serializer = OrderSerializer(
             data=request.data,
-            context={
-                "request": request,
-                "source": request.data.get("source")
-            }
+            context={"request": request, "source": request.data.get("source")},
         )
 
         if serializer.is_valid():
             order = serializer.save(createdBy=request.user)
 
-            return Response({
-                "message": "Order created successfully",
-                "order_id": str(order.id)
-            }, status=status.HTTP_201_CREATED)
+            return Response(
+                {"message": "Order created successfully", "order_id": str(order.id)},
+                status=status.HTTP_201_CREATED,
+            )
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 class VendorFetchView(APIView):
     permission_classes = [IsAuthenticated]
+
     def get(self, request):
         vendor_id = request.GET.get("vendor_id")
 
@@ -87,16 +105,18 @@ class VendorFetchView(APIView):
 
         vendor = get_object_or_404(User, pk=vendor_id)
         try:
-            external_data = fetch_vendor_orders(vendor)  #get_vendor_data(vendor)
+            external_data = fetch_vendor_orders(vendor)  # get_vendor_data(vendor)
             normalized = normalize_vendor_payload(external_data, vendor.id)
             return Response(normalized)
         except Exception as e:
-            return Response({
-                "error": "Failed to fetch vendor data",
-                "details": str(e)
-            }, status=500)
+            return Response(
+                {"error": "Failed to fetch vendor data", "details": str(e)}, status=500
+            )
+
+
 class OrderUploadPreviewView(APIView):
     permission_classes = [IsAuthenticated]
+
     def post(self, request):
         file = request.FILES.get("file")
         vendor_id = request.data.get("vendor")
@@ -133,24 +153,26 @@ class OrderUploadPreviewView(APIView):
                     items.append(item)
 
                 except Exception as e:
-                    errors.append({
-                        "row": index + 1,
-                        "error": str(e)
-                    })
+                    errors.append({"row": index + 1, "error": str(e)})
 
-            return Response({
-                "vendor": vendor_id,
-                "vendor_order_no": f"UPLOAD-{vendor_id}",
-                "items": items,
-                "errors": errors  # 🔥 RETURN ERRORS
-            })
+            return Response(
+                {
+                    "vendor": vendor_id,
+                    "vendor_order_no": f"UPLOAD-{vendor_id}",
+                    "items": items,
+                    "errors": errors,  # 🔥 RETURN ERRORS
+                }
+            )
 
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+
+
 class ScanItemView(APIView):
     permission_classes = [IsAuthenticated]
+
     def post(self, request):
-        barcodes = request.data.get('barcodes', [])
+        barcodes = request.data.get("barcodes", [])
 
         if not isinstance(barcodes, list):
             return Response({"error": "barcodes must be a list"}, status=400)
@@ -174,12 +196,12 @@ class ScanItemView(APIView):
             except OrderItem.DoesNotExist:
                 not_found.append(code)
 
-        return Response({
-            "scanned": scanned,
-            "not_found": not_found
-        })
+        return Response({"scanned": scanned, "not_found": not_found})
+
+
 class OverdueItemsView(APIView):
     permission_classes = [IsAuthenticated]
+
     def get(self, request):
         overdue = []
 
@@ -187,40 +209,40 @@ class OverdueItemsView(APIView):
 
         for scan in scans:
             if scan.is_over_24hrs():
-                overdue.append({
-                    "barcode": scan.item.barcode,
-                    "time_in": scan.time_in
-                })
+                overdue.append({"barcode": scan.item.barcode, "time_in": scan.time_in})
 
         return Response(overdue)
+
+
 class UploadOrderView(APIView):
     permission_classes = [IsAuthenticated]
+
     def post(self, request):
-        file = request.FILES.get('file')
+        file = request.FILES.get("file")
 
         df = pd.read_excel(file)
 
         for _, row in df.iterrows():
             order = Order.objects.create(
-                vendor_id=row['vendor_id'],
-                vendor_order_no=row['vendor_order_no'],
-                customer_name=row['customer_name'],
-                delivery_address=row['delivery_address'],
-                lga=row['lga'],
-                zone=row['zone'],
-                weight=row.get('weight', 0),
-                delivery_fee=row.get('delivery_fee', 0),
-                source='UPLOAD'
+                vendor_id=row["vendor_id"],
+                vendor_order_no=row["vendor_order_no"],
+                customer_name=row["customer_name"],
+                delivery_address=row["delivery_address"],
+                lga=row["lga"],
+                zone=row["zone"],
+                weight=row.get("weight", 0),
+                delivery_fee=row.get("delivery_fee", 0),
+                source="UPLOAD",
             )
 
-            OrderItem.objects.create(
-                order=order,
-                barcode=row['barcode']
-            )
+            OrderItem.objects.create(order=order, barcode=row["barcode"])
 
         return Response({"message": "Uploaded successfully"})
+
+
 class WarehouseScanView(APIView):
     permission_classes = [IsAuthenticated]
+
     def post(self, request):
         barcode = request.data.get("barcode")
 
@@ -232,90 +254,96 @@ class WarehouseScanView(APIView):
 
             # already scanned
             if hasattr(item, "warehouse_scan"):
-                return Response({
-                    "error": "Item already scanned",
-                    "barcode": barcode
-                }, status=400)
+                return Response(
+                    {"error": "Item already scanned", "barcode": barcode}, status=400
+                )
 
             # mark item
             item.is_scanned = True
             item.scanned_at = timezone.now()
             item.flag = "WAREHOUSE"
+            # item.delivery_fee=0. calculate it and lookup pricing template.
             item.save()
 
             # create warehouse record
-            scan = WarehouseScan.objects.create(
-                item=item,
-                createdBy=request.user
-            )
+            scan = WarehouseScan.objects.create(item=item, createdBy=request.user)
 
-            return Response({
-                "message": "Item scanned successfully",
-                "item": {
-                    "barcode": item.barcode,
-                    "receiver": item.receiver_name,
-                    "address": item.delivery_address,
-                    "phone":  item.receiver_phone,
-                    "time_in": scan.time_in
-                }
-            }, status=200)
+            return Response(
+                {
+                    "message": "Item scanned successfully",
+                    "item": {
+                        "barcode": item.barcode,
+                        "receiver": item.receiver_name,
+                        "address": item.delivery_address,
+                        "phone": item.receiver_phone,
+                        "time_in": scan.time_in,
+                    },
+                },
+                status=200,
+            )
 
         except OrderItem.DoesNotExist:
             return Response({"error": "Invalid barcode"}, status=404)
+
     def get(self, request):
         scans = WarehouseScan.objects.select_related(
-            'item',
-            'item__order',
-            'item__state',
-            'item__lga',
-            'item__zone',
-        ).order_by('-time_in')
+            "item",
+            "item__order",
+            "item__state",
+            "item__lga",
+            "item__zone",
+        ).order_by("-time_in")
 
         serializer = WarehouseScanSerializer(scans, many=True)
         return Response(serializer.data)
+
+
 class OverdueItemsView(APIView):
     permission_classes = [IsAuthenticated]
-    def get(self, request):
-        scans = WarehouseScan.objects.select_related('item')
 
-        overdue = [
-            scan for scan in scans if scan.is_over_24hrs()
-        ]
+    def get(self, request):
+        scans = WarehouseScan.objects.select_related("item")
+
+        overdue = [scan for scan in scans if scan.is_over_24hrs()]
 
         data = [
             {
                 "barcode": s.item.barcode,
                 "receiver": s.item.receiver_name,
-                "time_in": s.time_in
+                "time_in": s.time_in,
             }
             for s in overdue
         ]
 
         return Response(data)
+
+
 class DispatcherListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        available = request.query_params.get('available')
+        available = request.query_params.get("available")
 
-        dispatchers = User.objects.filter(role='Dispatcher')
+        dispatchers = User.objects.filter(role="Dispatcher")
 
         # Apply filter ONLY if query param is provided
         if available is not None:
-            if available.lower() == 'true':
-                dispatchers = dispatchers.filter(dispatcher_flag='Available')
-            elif available.lower() == 'false':
-                dispatchers = dispatchers.filter(dispatcher_flag='Unavailable')
+            if available.lower() == "true":
+                dispatchers = dispatchers.filter(dispatcher_flag="Available")
+            elif available.lower() == "false":
+                dispatchers = dispatchers.filter(dispatcher_flag="Unavailable")
 
-        dispatchers = dispatchers.order_by('-date_joined')
+        dispatchers = dispatchers.order_by("-date_joined")
         serializer = DispatcherSerializer(dispatchers, many=True)
         return Response(serializer.data)
+
+
 class UpdateDispatcherStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
         try:
-            dispatcher = User.objects.get(pk=pk, role='Dispatcher')
+            dispatcher = User.objects.get(pk=pk, role="Dispatcher")
         except User.DoesNotExist:
             return Response({"error": "Dispatcher not found"}, status=404)
 
@@ -327,18 +355,23 @@ class UpdateDispatcherStatusView(APIView):
         dispatcher.dispatcher_flag = new_status
         dispatcher.save()
 
-        return Response({
-            "message": "Dispatcher status updated successfully",
-            "status": dispatcher.dispatcher_flag
-        }, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "message": "Dispatcher status updated successfully",
+                "status": dispatcher.dispatcher_flag,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class VehicleListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         vehicles = Vehicle.objects.all()
 
-        owner_type = request.query_params.get('owner_type')
-        status_param = request.query_params.get('status')
+        owner_type = request.query_params.get("owner_type")
+        status_param = request.query_params.get("status")
 
         if owner_type:
             vehicles = vehicles.filter(owner_type=owner_type)
@@ -346,7 +379,7 @@ class VehicleListCreateView(APIView):
         if status_param:
             vehicles = vehicles.filter(vehicleStatus=status_param)
 
-        vehicles = vehicles.order_by('-createdAt')
+        vehicles = vehicles.order_by("-createdAt")
 
         serializer = VehicleSerializer(vehicles, many=True)
         return Response(serializer.data)
@@ -359,6 +392,8 @@ class VehicleListCreateView(APIView):
             return Response(serializer.data, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 class VehicleDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -384,13 +419,12 @@ class VehicleDetailView(APIView):
         vehicle = self.get_object(pk)
 
         if vehicle.vehicleStatus == "In Use":
-            return Response(
-                {"error": "Vehicle currently in use"},
-                status=400
-            )
+            return Response({"error": "Vehicle currently in use"}, status=400)
 
         vehicle.delete()
         return Response({"message": "Deleted successfully"}, status=204)
+
+
 class BulkDispatchView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -440,7 +474,9 @@ class BulkDispatchView(APIView):
 
             # ✅ UPDATE ORDER ITEM
             item.flag = "OUT_FOR_DELIVERY"
-            item.waybillNo = generate_waybill_no(item.state.code if item.state else "XXX")
+            item.waybillNo = generate_waybill_no(
+                item.state.code if item.state else "XXX"
+            )
             item.delivery_otp = generate_delivery_code()
             item.save()
 
@@ -463,12 +499,15 @@ class BulkDispatchView(APIView):
             },
             status=200,
         )
+
+
 class SingleDispatchView(APIView):
     permission_classes = [IsAuthenticated]
+
     @transaction.atomic
     def post(self, request):
         data = request.data.copy()
-        data['barcodes'] = [data.get('order_item')]
+        data["barcodes"] = [data.get("order_item")]
 
         serializer = BulkDispatchSerializer(data=data)
 
@@ -484,9 +523,9 @@ class SingleDispatchView(APIView):
                     vehicle.save()
                 except Vehicle.DoesNotExist:
                     raise Exception("Invalid vehicle")
-                
+
             # update the warehouse scan record if exists
-            item = result['dispatched_items'][0]  # single item
+            item = result["dispatched_items"][0]  # single item
             scan = getattr(item, "warehouse_scan", None)
             if scan and not scan.time_out:
                 scan.time_out = timezone.now()
@@ -496,10 +535,10 @@ class SingleDispatchView(APIView):
                 scan.flag = "OUT"
                 scan.save()
 
-
             return Response({"message": "Dispatched"}, status=201)
 
         return Response(serializer.errors, status=400)
+
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -521,10 +560,13 @@ class DriverPickupCreateView(APIView):
         if serializer.is_valid():
             pickup = serializer.save()
 
-            return Response({
-                "message": "Batch created successfully",
-                "data": DriverpickupSerializer(pickup).data
-            }, status=status.HTTP_201_CREATED)
+            return Response(
+                {
+                    "message": "Batch created successfully",
+                    "data": DriverpickupSerializer(pickup).data,
+                },
+                status=status.HTTP_201_CREATED,
+            )
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -533,9 +575,7 @@ class DriverPickupCreateView(APIView):
         hub_id = request.query_params.get("hub")
 
         pickups = driverpickup.objects.select_related(
-            "agent",
-            "vehicle",
-            "created_by","dispatch_hub"
+            "agent", "vehicle", "created_by", "dispatch_hub"
         ).all()
 
         # If hub is passed, filter by dispatch_hub
@@ -548,15 +588,16 @@ class DriverPickupCreateView(APIView):
 
         return Response(serializer.data, status=200)
 
+
 class HubItemDetailView(APIView):
     def get(self, request):
         user_hub = request.user.hub_name
-        pickups = HubTransfer.objects.filter(desthub=user_hub).select_related(
-            "batch_no",
-            "srchub",
-            "desthub",
-            "created_by"
-        ).all().order_by("-created_at")
+        pickups = (
+            HubTransfer.objects.filter(desthub=user_hub)
+            .select_related("batch_no", "srchub", "desthub", "created_by")
+            .all()
+            .order_by("-created_at")
+        )
 
         serializer = HubTransferSerializer(pickups, many=True)
 
@@ -569,51 +610,58 @@ class ManifestView(APIView):
     def get(self, request, batch_no):
         # 🔥 Get all dispatch records for the batch
         dispatches = Dispatch.objects.filter(batch_no=batch_no).select_related(
-            "order_item",
-            "agent",
-            "vehicle"
+            "order_item", "agent", "vehicle"
         )
 
         # 🔥 Extract order items from dispatch
-        #items = [d.order_item for d in dispatches]
-        items = OrderItem.objects.filter(dispatch__batch_no=batch_no).select_related("state", "lga", "zone")
+        # items = [d.order_item for d in dispatches]
+        items = OrderItem.objects.filter(dispatch__batch_no=batch_no).select_related(
+            "state", "lga", "zone"
+        )
 
         # 🔥 Get pickup (batch header info)
-        pickup = driverpickup.objects.filter(batch_no=batch_no).select_related(
-            "agent", "vehicle"
-        ).first()
+        pickup = (
+            driverpickup.objects.filter(batch_no=batch_no)
+            .select_related("agent", "vehicle")
+            .first()
+        )
 
-        return Response({
-            "batch": {
-                "batch_no": batch_no,
-                "agent_name": pickup.agent.fullName if pickup else "",
-                "vehicle_no": pickup.vehicle.vehicleNo if pickup and pickup.vehicle else "",
-                "created_at": pickup.created_at if pickup else None,
-            },
-            "items": [
-                {
-                    "barcode": i.barcode,
-                    "receiver": i.receiver_name,
-                    "phone": i.receiver_phone,
-                    "address": i.delivery_address,
-                    "state": i.state.name if i.state else "",
-                    "lga": i.lga.name if i.lga else "",
-                    "zone": i.zone.name if i.zone else "",
-                    "weight": float(i.weight or 0),
-                    "waybill": i.waybillNo,
-                }
-                for i in items
-            ]
-        })
+        return Response(
+            {
+                "batch": {
+                    "batch_no": batch_no,
+                    "agent_name": pickup.agent.fullName if pickup else "",
+                    "vehicle_no": (
+                        pickup.vehicle.vehicleNo if pickup and pickup.vehicle else ""
+                    ),
+                    "created_at": pickup.created_at if pickup else None,
+                },
+                "items": [
+                    {
+                        "barcode": i.barcode,
+                        "receiver": i.receiver_name,
+                        "phone": i.receiver_phone,
+                        "address": i.delivery_address,
+                        "state": i.state.name if i.state else "",
+                        "lga": i.lga.name if i.lga else "",
+                        "zone": i.zone.name if i.zone else "",
+                        "weight": float(i.weight or 0),
+                        "waybill": i.waybillNo,
+                    }
+                    for i in items
+                ],
+            }
+        )
+
+
 @api_view(["GET"])
-def getDispatchInfo(request,batchno):
+def getDispatchInfo(request, batchno):
     if request.user.is_authenticated:
         try:
             pickup = driverpickup.objects.get(batch_no=batchno)
         except driverpickup.DoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
-        
-    
+
         serializer = DriverpickupSerializer(pickup)
         return Response(serializer.data)
     else:
@@ -624,18 +672,18 @@ class DispatchSummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        summary = Dispatch.objects.values(
-            "batch_no",
-            "agent__fullName",
-            "vehicle__vehicleNo"
-        ).annotate(
-             agent=F("agent__fullName"),
-            vehicleNo=F("vehicle__vehicleNo"),
-            total_items=Count("id")
-            
-        ).order_by("-batch_no")
+        summary = (
+            Dispatch.objects.values("batch_no", "agent__fullName", "vehicle__vehicleNo")
+            .annotate(
+                agent=F("agent__fullName"),
+                vehicleNo=F("vehicle__vehicleNo"),
+                total_items=Count("id"),
+            )
+            .order_by("-batch_no")
+        )
 
         return Response(summary, status=200)
+
 
 class DriverPickupUpdateView(APIView):
     permission_classes = [IsAuthenticated]
@@ -673,10 +721,9 @@ class DriverPickupUpdateView(APIView):
 
             d.save()
 
-        return Response({
-            "message": "Batch updated successfully"
-        }, status=200)
-   
+        return Response({"message": "Batch updated successfully"}, status=200)
+
+
 class dispatcherPickupView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -711,21 +758,19 @@ class dispatcherPickupView(APIView):
                 vehicle.save()
             except Vehicle.DoesNotExist:
                 return Response({"error": "Invalid vehicle"}, status=400)
-            
-        #=============================
-        # Update the batch from pending to completed
-        #=============================
+
+            # =============================
+            # Update the batch from pending to completed
+            # =============================
             bn = driverpickup.objects.get(batch_no=batchno)
-            bn.action_done="Dispatched"
-            bn.flag ="Completed"
+            bn.action_done = "Dispatched"
+            bn.flag = "Completed"
             bn.save()
 
         # ===============================
         # ✅ FETCH ITEMS (LOCKED)
         # ===============================
         items = OrderItem.objects.select_for_update().filter(barcode__in=barcodes)
-
-
 
         if items.count() != len(barcodes):
             return Response({"error": "Some items not found"}, status=400)
@@ -742,7 +787,7 @@ class dispatcherPickupView(APIView):
 
             # 🚫 Must be in warehouse
             if item.flag not in ["WAREHOUSE", "IN_HUB_TRANSFER"]:
-                 raise Exception(f"Item {item.id} is not in warehouse")
+                raise Exception(f"Item {item.id} is not in warehouse")
 
             # 🚫 Prevent double dispatch
             if item.flag == "PICKED_UP":
@@ -757,7 +802,6 @@ class dispatcherPickupView(APIView):
                 scan.updatedBy = request.user.fullName
                 scan.flag = "PICKED_UP"
                 scan.save()
-            
 
             # ===============================
             # ✅ GROUP KEY (receiver + batch)
@@ -782,7 +826,7 @@ class dispatcherPickupView(APIView):
                     picked_up_at=timezone.now(),
                     picked_up_by=agent,
                     assigned_by=request.user,
-                    batch_no=batchno
+                    batch_no=batchno,
                 )
 
                 # UPDATE ITEM
@@ -806,7 +850,7 @@ class dispatcherPickupView(APIView):
                 "agent_phone": agent.mobileNo,
                 "vehicle_no": vehicle.vehicleNo if vehicle else "N/A",
                 "vehicle_tag": vehicle.vehicleTag if vehicle else "N/A",
-                "year": timezone.now().year
+                "year": timezone.now().year,
             }
 
             subject = "Your Items Are Out for Delivery - OTP Inside"
@@ -819,13 +863,13 @@ class dispatcherPickupView(APIView):
                 "",
                 settings.DEFAULT_FROM_EMAIL,
                 to=[receiver_email],
-                cc=[cc_email] if cc_email else []
+                cc=[cc_email] if cc_email else [],
             )
             email.attach_alternative(html_content, "text/html")
             email.send()
 
         return Response({"message": "Bulk dispatch successful"}, status=201)
-    
+
     @transaction.atomic
     def put(self, request):
         barcodes = request.data.get("barcodes", [])  # expect list
@@ -857,13 +901,13 @@ class dispatcherPickupView(APIView):
                 vehicle.save()
             except Vehicle.DoesNotExist:
                 return Response({"error": "Invalid vehicle"}, status=400)
-            
-        #=============================
-        # Update the batch from pending to completed
-        #=============================
+
+            # =============================
+            # Update the batch from pending to completed
+            # =============================
             bn = driverpickup.objects.get(batch_no=batchno)
-            bn.action_done="Dispatched"
-            bn.flag ="Completed"
+            bn.action_done = "Dispatched"
+            bn.flag = "Completed"
             bn.save()
 
         # ===============================
@@ -871,11 +915,11 @@ class dispatcherPickupView(APIView):
         # ===============================
         items = OrderItem.objects.select_for_update().filter(barcode__in=barcodes)
 
-        #Transfer Item from hub
-        transferitem = HubTransferItem.objects.select_for_update().filter(barcode__in=barcodes)
+        # Transfer Item from hub
+        transferitem = HubTransferItem.objects.select_for_update().filter(
+            barcode__in=barcodes
+        )
         transferitem.update(flag="PICKED_UP")
-
-
 
         if items.count() != len(barcodes):
             return Response({"error": "Some items not found"}, status=400)
@@ -892,7 +936,7 @@ class dispatcherPickupView(APIView):
 
             # 🚫 Must be in warehouse
             if item.flag not in ["WAREHOUSE", "IN_HUB_TRANSFER"]:
-                 raise Exception(f"Item {item.id} is not in warehouse")
+                raise Exception(f"Item {item.id} is not in warehouse")
 
             # 🚫 Prevent double dispatch
             if item.flag == "PICKED_UP":
@@ -902,21 +946,20 @@ class dispatcherPickupView(APIView):
             # ✅ UPDATE WAREHOUSE SCAN
             # ===============================
             scan = getattr(item, "warehouse_scan", None)
-            #scan = WarehouseScan.objects.filter(item=item).first()
-            if scan: #and not scan.time_out:
+            # scan = WarehouseScan.objects.filter(item=item).first()
+            if scan:  # and not scan.time_out:
                 scan.time_out = timezone.now()
                 scan.updatedBy = request.user.fullName
                 scan.flag = "PICKED_UP"
                 scan.save()
 
-            # ===============================
-            # ✅ UPDATE ORDER ITEM
-            # ===============================
-            
+                # ===============================
+                # ✅ UPDATE ORDER ITEM
+                # ===============================
+
                 item.flag = "PICKED_UP"
                 scan.save()
-            
-            
+
             # ===============================
             # ✅ GROUP KEY (receiver + batch)
             # ===============================
@@ -939,7 +982,7 @@ class dispatcherPickupView(APIView):
                     flag="PICKED_UP",
                     created_at=timezone.now(),
                     scanned_by=request.user,
-                    )
+                )
 
                 # UPDATE ITEM
                 item.flag = "PICKED_UP"
@@ -962,7 +1005,7 @@ class dispatcherPickupView(APIView):
                 "agent_phone": agent.mobileNo,
                 "vehicle_no": vehicle.vehicleNo if vehicle else "N/A",
                 "vehicle_tag": vehicle.vehicleTag if vehicle else "N/A",
-                "year": timezone.now().year
+                "year": timezone.now().year,
             }
 
             subject = "Your Items Are Out for Delivery - OTP Inside"
@@ -975,13 +1018,14 @@ class dispatcherPickupView(APIView):
                 "",
                 settings.DEFAULT_FROM_EMAIL,
                 to=[receiver_email],
-                cc=[cc_email] if cc_email else []
+                cc=[cc_email] if cc_email else [],
             )
             email.attach_alternative(html_content, "text/html")
             email.send()
 
         return Response({"message": "Bulk dispatch successful"}, status=200)
-    
+
+
 class ValidateBarcodeView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -999,17 +1043,17 @@ class ValidateBarcodeView(APIView):
         if item.flag == "PICKUP":
             return Response({"error": "Already dispatched"}, status=400)
 
-        return Response({
-            "valid": True,
-            "item": {
-                "receiver_name": item.receiver_name,
-                "receiver_address": item.delivery_address,
-                "receiver_phone": item.receiver_phone,
-                "weight":item.weight
-
-            
+        return Response(
+            {
+                "valid": True,
+                "item": {
+                    "receiver_name": item.receiver_name,
+                    "receiver_address": item.delivery_address,
+                    "receiver_phone": item.receiver_phone,
+                    "weight": item.weight,
+                },
             }
-        })
+        )
 
 
 class ValidateHubBarcodeView(APIView):
@@ -1020,8 +1064,7 @@ class ValidateHubBarcodeView(APIView):
 
         if not barcode:
             return Response(
-                {"error": "Barcode is required"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "Barcode is required"}, status=status.HTTP_400_BAD_REQUEST
             )
 
         # -------------------------------------------------
@@ -1031,8 +1074,7 @@ class ValidateHubBarcodeView(APIView):
             hub_item = HubTransferItem.objects.get(barcode=barcode)
         except HubTransferItem.DoesNotExist:
             return Response(
-                {"error": "Invalid barcode"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "Invalid barcode"}, status=status.HTTP_400_BAD_REQUEST
             )
 
         # -------------------------------------------------
@@ -1041,13 +1083,12 @@ class ValidateHubBarcodeView(APIView):
         if hub_item.flag != "WAREHOUSE":
             return Response(
                 {"error": "Item not yet received in warehouse"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if hub_item.flag == "PICKUP":
             return Response(
-                {"error": "Already dispatched"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "Already dispatched"}, status=status.HTTP_400_BAD_REQUEST
             )
 
         # -------------------------------------------------
@@ -1058,29 +1099,32 @@ class ValidateHubBarcodeView(APIView):
             item = OrderItem.objects.get(barcode=barcode)
         except OrderItem.DoesNotExist:
             return Response(
-                {"error": "Order item not found"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "Order item not found"}, status=status.HTTP_400_BAD_REQUEST
             )
 
         # -------------------------------------------------
         # Step 4: Return response
         # -------------------------------------------------
-        return Response({
-            "valid": True,
-            "item": {
-                "receiver_name": item.receiver_name,
-                "receiver_address": item.delivery_address,
-                "receiver_phone": item.receiver_phone,
-                "weight": item.weight,
-                "barcode": item.barcode,
-            }
-        }, status=status.HTTP_200_OK)
-    
+        return Response(
+            {
+                "valid": True,
+                "item": {
+                    "receiver_name": item.receiver_name,
+                    "receiver_address": item.delivery_address,
+                    "receiver_phone": item.receiver_phone,
+                    "weight": item.weight,
+                    "barcode": item.barcode,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class PartnerCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        vehicles = LogisticsPartner.objects.all().order_by('-created_at')
+        vehicles = LogisticsPartner.objects.all().order_by("-created_at")
         serializer = PartnerSerializer(vehicles, many=True)
         return Response(serializer.data)
 
@@ -1092,6 +1136,8 @@ class PartnerCreateView(APIView):
             return Response(serializer.data, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 class PartnerDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1105,7 +1151,9 @@ class PartnerDetailView(APIView):
 
     def patch(self, request, pk):
         partner = self.get_object(pk)
-        serializer = PartnerSerializer(partner, data=request.data, partial=True)  # ✅ use serializer
+        serializer = PartnerSerializer(
+            partner, data=request.data, partial=True
+        )  # ✅ use serializer
 
         if serializer.is_valid():
             serializer.save()
@@ -1117,92 +1165,111 @@ class PartnerDetailView(APIView):
         partner = self.get_object(pk)
         # You might want to check if partner has vehicles assigned instead of vehicleStatus
         partner.delete()
-        return Response({"message": "Deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
+        return Response(
+            {"message": "Deleted successfully"}, status=status.HTTP_204_NO_CONTENT
+        )
+
+
 class OrderByStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        status_param = request.query_params.get('status')
-        #print("Status param:", status_param)  # Debugging line
+        status_param = request.query_params.get("status")
+        # print("Status param:", status_param)  # Debugging line
 
         if not status_param:
             return Response({"error": "Status query parameter is required"}, status=400)
 
-        items = OrderItem.objects.filter(flag=status_param).select_related('order').order_by('-scanned_at')
-       # print(f"Found {items.count()} items with status {status_param}")  # Debugging line
+        items = (
+            OrderItem.objects.filter(flag=status_param)
+            .select_related("order")
+            .order_by("-scanned_at")
+        )
+        # print(f"Found {items.count()} items with status {status_param}")  # Debugging line
         data = [
             {
                 "barcode": item.barcode,
                 "receiver": item.receiver_name,
                 "address": item.delivery_address,
-                "phone":  item.receiver_phone,
+                "phone": item.receiver_phone,
                 "order_id": str(item.order.id),
-                "vendor":item.order.vendor.fullName if item.order.vendor else None,
-                "weight":item.weight,
-                "state":item.state.name if item.state else None,
-                "lga":item.lga.name if item.lga else None,
-                "zone":item.zone.name if item.zone else None,
+                "vendor": item.order.vendor.fullName if item.order.vendor else None,
+                "weight": item.weight,
+                "state": item.state.name if item.state else None,
+                "lga": item.lga.name if item.lga else None,
+                "zone": item.zone.name if item.zone else None,
                 "time_in": item.scanned_at,
-                "flag": item.flag
+                "flag": item.flag,
             }
             for item in items
         ]
 
         return Response(data, status=200)
+
+
 class DispatchedOrderView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        status_param = request.query_params.get('status')
-        #print("Status param:", status_param)  # Debugging line
+        status_param = request.query_params.get("status")
+        # print("Status param:", status_param)  # Debugging line
 
         if not status_param:
             return Response({"error": "Status query parameter is required"}, status=400)
 
-        #items = OrderItem.objects.filter(flag=status_param).select_related('order').order_by('-scanned_at')
-        items = OrderItem.objects.filter(
-    flag=status_param).select_related(
-                        'order',
-                        'order__vendor',
-                        'state',
-                        'lga',
-                        'zone',
-                        'dispatch__agent',
-                        'dispatch__vehicle'
-                    ).order_by('-scanned_at')
-       # print(f"Found {items.count()} items with status {status_param}")  # Debugging line
+        # items = OrderItem.objects.filter(flag=status_param).select_related('order').order_by('-scanned_at')
+        items = (
+            OrderItem.objects.filter(flag=status_param)
+            .select_related(
+                "order",
+                "order__vendor",
+                "state",
+                "lga",
+                "zone",
+                "dispatch__agent",
+                "dispatch__vehicle",
+            )
+            .order_by("-scanned_at")
+        )
+        # print(f"Found {items.count()} items with status {status_param}")  # Debugging line
         data = [
-        {
-            "barcode": item.barcode,
-            "receiver": item.receiver_name,
-            "address": item.delivery_address,
-            "phone": item.receiver_phone,
-
-            # Order
-            "order_id": str(item.order.id),
-            "vendor": item.order.vendor.fullName if item.order.vendor else None,
-
-            # Location
-            "state": item.state.name if item.state else None,
-            "lga": item.lga.name if item.lga else None,
-            "zone": item.zone.name if item.zone else None,
-
-            # Item
-            "weight": item.weight,
-            "time_in": item.scanned_at,
-            "flag": item.flag,
-
-            # Dispatch
-            "agent": item.dispatch.agent.fullName if hasattr(item, 'dispatch') else None,
-            "vehicle": item.dispatch.vehicle.vehicleNo if item.dispatch and item.dispatch.vehicle else None,
-            "dispatch_status": item.dispatch.status if hasattr(item, 'dispatch') else None,
-            "assigned_at": item.dispatch.assigned_at if hasattr(item, 'dispatch') else None,
-        }
-        for item in items
+            {
+                "barcode": item.barcode,
+                "receiver": item.receiver_name,
+                "address": item.delivery_address,
+                "phone": item.receiver_phone,
+                # Order
+                "order_id": str(item.order.id),
+                "vendor": item.order.vendor.fullName if item.order.vendor else None,
+                # Location
+                "state": item.state.name if item.state else None,
+                "lga": item.lga.name if item.lga else None,
+                "zone": item.zone.name if item.zone else None,
+                # Item
+                "weight": item.weight,
+                "time_in": item.scanned_at,
+                "flag": item.flag,
+                # Dispatch
+                "agent": (
+                    item.dispatch.agent.fullName if hasattr(item, "dispatch") else None
+                ),
+                "vehicle": (
+                    item.dispatch.vehicle.vehicleNo
+                    if item.dispatch and item.dispatch.vehicle
+                    else None
+                ),
+                "dispatch_status": (
+                    item.dispatch.status if hasattr(item, "dispatch") else None
+                ),
+                "assigned_at": (
+                    item.dispatch.assigned_at if hasattr(item, "dispatch") else None
+                ),
+            }
+            for item in items
         ]
 
         return Response(data, status=200)
-    
+
     # @transaction.atomic
     # def patch(self, request):
     #     barcode = request.data.get("barcode")
@@ -1290,24 +1357,21 @@ class DispatchedOrderView(APIView):
         if dispatch.status not in ["ASSIGNED", "OUT_FOR_DELIVERY"]:
             return Response(
                 {"error": f"Invalid state transition from {dispatch.status}"},
-                status=400
+                status=400,
             )
 
         # ✅ Ensure correct dispatcher
         if dispatch.agent != request.user:
-            return Response(
-                {"error": "This item is not assigned to you"},
-                status=403
-            )
+            return Response({"error": "This item is not assigned to you"}, status=403)
 
         # ===============================
         # ✅ GENERATE OTP
         # ===============================
-        #otp = generate_otp()
+        # otp = generate_otp()
 
         # OPTIONAL: save OTP to item or dispatch
-        #dispatch.delivery_otp = otp
-        #dispatch.otp_created_at = timezone.now()
+        # dispatch.delivery_otp = otp
+        # dispatch.otp_created_at = timezone.now()
 
         # ===============================
         # ✅ UPDATE DISPATCH
@@ -1347,7 +1411,7 @@ class DispatchedOrderView(APIView):
             "agent_phone": agent.mobileNo,
             "vehicle_no": vehicle.vehicleNo if vehicle else "N/A",
             "vehicle_tag": vehicle.vehicleTag if vehicle else "N/A",
-            "year": timezone.now().year
+            "year": timezone.now().year,
         }
 
         # ===============================
@@ -1363,19 +1427,23 @@ class DispatchedOrderView(APIView):
             subject,
             "",
             settings.DEFAULT_FROM_EMAIL,
-        to= [to_email],
-            cc=[cc_email] if cc_email else []
+            to=[to_email],
+            cc=[cc_email] if cc_email else [],
         )
         email.attach_alternative(html_content, "text/html")
         email.send()
 
-        return Response({
-            "message": "Item picked successfully & email sent",
-            "barcode": barcode,
-            "otp": item.delivery_otp,
-            "picked_by": request.user.id,
-            "picked_at": dispatch.picked_up_at
-        }, status=200)
+        return Response(
+            {
+                "message": "Item picked successfully & email sent",
+                "barcode": barcode,
+                "otp": item.delivery_otp,
+                "picked_by": request.user.id,
+                "picked_at": dispatch.picked_up_at,
+            },
+            status=200,
+        )
+
 
 class MyDispatchView(APIView):
     permission_classes = [IsAuthenticated]
@@ -1387,19 +1455,22 @@ class MyDispatchView(APIView):
 
         serializer = DispatchSerializer(items, many=True)
 
-        return Response(serializer.data, status=200)    
+        return Response(serializer.data, status=200)
+
+
 class AllMyDispatchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        items = Dispatch.objects.filter(
-            agent=request.user
-        ).select_related("order_item", "vehicle")
+        items = Dispatch.objects.filter(agent=request.user).select_related(
+            "order_item", "vehicle"
+        )
 
         serializer = DispatchSerializer(items, many=True)
-        #print(serializer.data) #debuggng
+        # print(serializer.data) #debuggng
 
         return Response(serializer.data, status=200)
+
 
 VALID_STATUSES = [
     "IN_TRANSIT",
@@ -1469,7 +1540,7 @@ class UpdateDeliveryStatus(APIView):
                     {"error": "Issue reason is required"},
                     status=http_status.HTTP_400_BAD_REQUEST,
                 )
-        #update warehouse scan record if exists
+        # update warehouse scan record if exists
         scan = getattr(item, "warehouse_scan", None)
         if scan:
             scan.flag = status
@@ -1497,7 +1568,8 @@ class UpdateDeliveryStatus(APIView):
             disp.save()
 
         return Response({"message": "Status updated successfully"})
-    
+
+
 def reassign_dispatch(dispatch, new_agent, new_vehicle, user):
     DispatchHistory.objects.create(
         dispatch=dispatch,
@@ -1505,13 +1577,14 @@ def reassign_dispatch(dispatch, new_agent, new_vehicle, user):
         new_agent=new_agent,
         old_vehicle=dispatch.vehicle,
         new_vehicle=new_vehicle,
-        changed_by=user
+        changed_by=user,
     )
 
     dispatch.agent = new_agent
     dispatch.vehicle = new_vehicle
     dispatch.reassigned_at = timezone.now()
     dispatch.save()
+
 
 class UpdateAgentLocation(APIView):
     permission_classes = [IsAuthenticated]
@@ -1525,26 +1598,28 @@ class UpdateAgentLocation(APIView):
             return Response({"error": "Latitude and Longitude required"}, status=400)
 
         AgentLocation.objects.create(
-            agent=request.user,
-            latitude=lat,
-            longitude=lng,
-            barcode=barcode
+            agent=request.user, latitude=lat, longitude=lng, barcode=barcode
         )
 
         return Response({"message": "Location updated"})
-    
+
+
 class AgentMovementTrail(APIView):
     def get(self, request):
         try:
             # Subquery to get the latest vehicle assigned to the agent
-            latest_dispatch_subquery = Dispatch.objects.filter(
-                agent=OuterRef('agent_id')
-            ).order_by('-assigned_at').values('vehicle__vehicleNo')[:1]
+            latest_dispatch_subquery = (
+                Dispatch.objects.filter(agent=OuterRef("agent_id"))
+                .order_by("-assigned_at")
+                .values("vehicle__vehicleNo")[:1]
+            )
 
             # Fetch locations and annotate with vehicle
-            qs = AgentLocation.objects.select_related('agent').annotate(
-                vehicle_no=Subquery(latest_dispatch_subquery)
-            ).order_by('timestamp')
+            qs = (
+                AgentLocation.objects.select_related("agent")
+                .annotate(vehicle_no=Subquery(latest_dispatch_subquery))
+                .order_by("timestamp")
+            )
 
             # Build response
             data = [
@@ -1562,17 +1637,17 @@ class AgentMovementTrail(APIView):
 
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
- 
+
 
 class HubViewSet(AuditedModelViewSet):
-    queryset = Hub.objects.all().order_by('-createdAt')
+    queryset = Hub.objects.all().order_by("-createdAt")
     serializer_class = HubSerializer
     permission_classes = [permissions.IsAuthenticated]
     model_label = "Hub"
-   
+
 
 class HubTransferViewSet(AuditedModelViewSet):
-    queryset = HubTransfer.objects.all().order_by('-created_at')
+    queryset = HubTransfer.objects.all().order_by("-created_at")
     serializer_class = HubTransferSerializer
     permission_classes = [permissions.IsAuthenticated]
     model_label = "Hub Transfer"
@@ -1587,16 +1662,20 @@ class HubstoreViewSet(AuditedModelViewSet):
 
         order_items = OrderItem.objects.filter(barcode=OuterRef("barcode"))
 
-        return HubTransferItem.objects.filter(
-            transfer__desthub=user_hub
-        ).annotate(
-            receiver_name=Subquery(order_items.values("receiver_name")[:1]),
-            delivery_address=Subquery(order_items.values("delivery_address")[:1]),
-            waybillNo=Subquery(order_items.values("waybillNo")[:1]),
-            holding_period=Subquery(order_items.values("holding_period")[:1]),
-            #flag=Subquery(order_items.values("flag")[:1]),
-            batch_no=Subquery(
-                HubTransfer.objects.filter(id=OuterRef("transfer_id"))
-                .values("batch_no__batch_no")[:1]
-            ),
-        ).select_related("transfer", "transfer__desthub").order_by("-id")
+        return (
+            HubTransferItem.objects.filter(transfer__desthub=user_hub)
+            .annotate(
+                receiver_name=Subquery(order_items.values("receiver_name")[:1]),
+                delivery_address=Subquery(order_items.values("delivery_address")[:1]),
+                waybillNo=Subquery(order_items.values("waybillNo")[:1]),
+                holding_period=Subquery(order_items.values("holding_period")[:1]),
+                # flag=Subquery(order_items.values("flag")[:1]),
+                batch_no=Subquery(
+                    HubTransfer.objects.filter(id=OuterRef("transfer_id")).values(
+                        "batch_no__batch_no"
+                    )[:1]
+                ),
+            )
+            .select_related("transfer", "transfer__desthub")
+            .order_by("-id")
+        )
