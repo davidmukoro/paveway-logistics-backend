@@ -1,5 +1,7 @@
 from django.shortcuts import render
 from rest_framework import viewsets, permissions
+
+from .utils import compute_customer_wallet_balance
 from .models import Expense, IouRequest, WalletFunding
 from setup.models import User
 from .serializers import ExpenseSerializer, IouRequestSerializer, WalletSerializer
@@ -21,22 +23,23 @@ class CustomerWalletBalance(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, id):
-        user = User.objects.get(pk=id)
-        if user.cPayType == "Postpaid":
-            expense = (
-                WalletFunding.objects.filter(customer_id=id).aggregate(
-                    total=Sum("amount")
-                )["total"]
-                or 0.00
-            )
-            total_balance = float(user.creditLimit) + float(expense)
-        else:
-            total_balance = (
-                WalletFunding.objects.filter(customer_id=id).aggregate(
-                    total=Sum("amount")
-                )["total"]
-                or 0.00
-            )
+        # user = User.objects.get(pk=id)
+        # if user.cPayType == "Postpaid":
+        #     expense = (
+        #         WalletFunding.objects.filter(customer_id=id).aggregate(
+        #             total=Sum("amount")
+        #         )["total"]
+        #         or 0.00
+        #     )
+        #     total_balance = float(user.creditLimit) + float(expense)
+        # else:
+        #     total_balance = (
+        #         WalletFunding.objects.filter(customer_id=id).aggregate(
+        #             total=Sum("amount")
+        #         )["total"]
+        #         or 0.00
+        #     )
+        total_balance = compute_customer_wallet_balance(id)
         return Response({"customer_id": id, "total_balance": total_balance})
 
 

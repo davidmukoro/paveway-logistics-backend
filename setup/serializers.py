@@ -265,6 +265,11 @@ class StaffSerializer(serializers.ModelSerializer):
             "bank",
             "account_no",
             "disengagement_date",
+            "guarantor",
+            "guarantor_add",
+            "guarantor_mobile",
+            "guarantor_rship",
+            "guarantor_nin",
         ]
 
         extra_kwargs = {
@@ -286,6 +291,11 @@ class StaffSerializer(serializers.ModelSerializer):
             "bank": {"required": False},
             "account_no": {"required": False},
             "disengagement_date": {"required": False},
+            "guarantor": {"required": False},
+            "guarantor_add": {"required": False},
+            "guarantor_mobile": {"required": False},
+            "guarantor_rship": {"required": False},
+            "guarantor_nin": {"required": False},
         }
 
     def to_internal_value(self, data):
@@ -411,6 +421,11 @@ class GetStaffList(serializers.ModelSerializer):
             "bank",
             "account_no",
             "disengagement_date",
+            "guarantor",
+            "guarantor_add",
+            "guarantor_mobile",
+            "guarantor_rship",
+            "guarantor_nin",
         ]
 
     def get_partner_name(self, obj):
@@ -927,7 +942,9 @@ class PricingSerializer(serializers.ModelSerializer):
             "id",
             "subarea",
             "price",
+            "basekg",
             "extrakg",
+            "extraprice",
             "pricetype",
             "createdBy",
             "updatedBy",

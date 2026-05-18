@@ -3,9 +3,10 @@ from django.utils import timezone
 from .models import Codesec
 from .models import Auditlog
 
+
 def generate_staffNo(staffCode, code):
     current_year = timezone.now().year
-    
+
     try:
         num = Codesec.objects.get(code=code)
     except Codesec.DoesNotExist:
@@ -15,15 +16,16 @@ def generate_staffNo(staffCode, code):
         num.save()
 
     lastNo = num.counter
-    fstaffNo = staffCode + str(lastNo).rjust(3, '0')  # KSC005
+    fstaffNo = staffCode + str(lastNo).rjust(3, "0")  # KSC005
     num.lastRecord = fstaffNo
     num.save()
 
     return fstaffNo
 
+
 def generate_transid(code):
     current_year = timezone.now().year
-    
+
     try:
         num = Codesec.objects.get(code=code, year=current_year)
     except Codesec.DoesNotExist:
@@ -33,15 +35,18 @@ def generate_transid(code):
         num.save()
 
     lastNo = num.counter
-    transid = code +str("-")+str(current_year)+str("-")+ str(lastNo).rjust(3, '0')  # BK-2024-001
+    transid = (
+        code + str("-") + str(current_year) + str("-") + str(lastNo).rjust(3, "0")
+    )  # BK-2024-001
     num.lastRecord = transid
     num.save()
 
     return transid
 
+
 def generate_seriality(code):
     current_year = timezone.now().year
-    
+
     try:
         num = Codesec.objects.get(code=code)
     except Codesec.DoesNotExist:
@@ -51,7 +56,7 @@ def generate_seriality(code):
         num.save()
 
     lastNo = num.counter
-    transid = code + str(lastNo).rjust(2, '0')  # BK-2024-001
+    transid = code + str(lastNo).rjust(2, "0")  # BK-2024-001
     num.lastRecord = transid
     num.save()
 
@@ -61,24 +66,23 @@ def generate_seriality(code):
 def log_user_activity(request, activity_description):
     user = request.user if request.user.is_authenticated else None
     ip = get_client_ip(request)
-    user_agent = request.META.get('HTTP_USER_AGENT', '')
+    user_agent = request.META.get("HTTP_USER_AGENT", "")
 
     # Create an audit log entry
     Auditlog.objects.create(
-        user=user,
-        activity=activity_description,
-        ip=ip,
-        user_agent=user_agent
+        user=user, activity=activity_description, ip=ip, user_agent=user_agent
     )
+
 
 def get_client_ip(request):
     """Utility to extract IP address from request"""
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
-        ip = x_forwarded_for.split(',')[0]
+        ip = x_forwarded_for.split(",")[0]
     else:
-        ip = request.META.get('REMOTE_ADDR')
+        ip = request.META.get("REMOTE_ADDR")
     return ip
+
 
 def getCloudinaryPath(file):
     cloud_name = "dc5id3nl2"  # Set Cloudinary cloud name
@@ -86,6 +90,7 @@ def getCloudinaryPath(file):
 
 
 from .models import Auditlog
+
 
 def log_activity(request, user, activity):
     ip = None
@@ -96,12 +101,7 @@ def log_activity(request, user, activity):
     if request:
         user_agent = request.META.get("HTTP_USER_AGENT", "")
 
-    Auditlog.objects.create(
-        user=user,
-        activity=activity,
-        ip=ip,
-        user_agent=user_agent
-    )
+    Auditlog.objects.create(user=user, activity=activity, ip=ip, user_agent=user_agent)
 
 
 # def get_client_ip(request):
@@ -160,7 +160,7 @@ class AuditedModelViewSet(viewsets.ModelViewSet):
                 else:
                     data[field.name] = {
                         "id": str(getattr(value, "id", None)),
-                        "label": str(value)
+                        "label": str(value),
                     }
 
             # 🔥 IMPORTANT: run safe_json for ALL remaining cases
@@ -173,10 +173,7 @@ class AuditedModelViewSet(viewsets.ModelViewSet):
         changes = {}
         for key in new:
             if old.get(key) != new.get(key):
-                changes[key] = {
-                    "from": old.get(key),
-                    "to": new.get(key)
-                }
+                changes[key] = {"from": old.get(key), "to": new.get(key)}
         return changes
 
     def create(self, request, *args, **kwargs):
@@ -257,6 +254,8 @@ class AuditedModelViewSet(viewsets.ModelViewSet):
         )
 
         return response
+
+
 # class AuditedModelViewSet(viewsets.ModelViewSet):
 #     """
 #     Base ViewSet that automatically logs user activity

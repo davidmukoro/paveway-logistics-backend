@@ -2,38 +2,77 @@ from datetime import timedelta
 
 from rest_framework import serializers
 from setup.utils import generate_staffNo
-from .utils import generate_waybill_no, geocode_address
-from .models import (Order, OrderItem,WarehouseScan,Vehicle,Dispatch,LogisticsPartner,
-                     driverpickup,Hub,HubTransfer, HubTransferItem)
+from .utils import create_tracking, generate_waybill_no, geocode_address
+from .models import (
+    Order,
+    OrderItem,
+    WarehouseScan,
+    Vehicle,
+    Dispatch,
+    LogisticsPartner,
+    driverpickup,
+    Hub,
+    HubTransfer,
+    HubTransferItem,
+    OrderItemTracking,
+)
 from django.db import transaction
 from setup.models import User
 from django.db import transaction
 from django.utils import timezone
-from setup.models import Zone,Lga,NigState
+from setup.models import Zone, Lga, NigState
 
-class OrderItemSerializer(serializers.ModelSerializer):
-    state_name = serializers.CharField(source='state.name', read_only=True)
-    lga_name = serializers.CharField(source='lga.name', read_only=True)
-    zone_name = serializers.CharField(source='zone.name', read_only=True)
-    
+
+class OrderItemTrackingSerializer(serializers.ModelSerializer):
+    updated_by_name = serializers.CharField(
+        source="updated_by.fullName", read_only=True
+    )
+
+    class Meta:
+        model = OrderItemTracking
+        fields = "__all__"
+        read_only_fields = ["updated_by", "updated_at"]
+
+
+class WayBillHistorySerializer(serializers.ModelSerializer):
+    state_name = serializers.CharField(source="state.name", read_only=True)
+    lga_name = serializers.CharField(source="lga.name", read_only=True)
+    zone_name = serializers.CharField(source="zone.name", read_only=True)
+    batch_no = serializers.CharField(source="order.order_no", read_only=True)
+
     class Meta:
         model = OrderItem
-        exclude = ['order']  # 🔥 IMPORTANT
+        exclude = ["order"]  # 🔥 IMPORTANT
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    state_name = serializers.CharField(source="state.name", read_only=True)
+    lga_name = serializers.CharField(source="lga.name", read_only=True)
+    zone_name = serializers.CharField(source="zone.name", read_only=True)
+
+    class Meta:
+        model = OrderItem
+        exclude = ["order"]  # 🔥 IMPORTANT
 
     def validate_barcode(self, value):
         if OrderItem.objects.filter(barcode=value).exists():
             raise serializers.ValidationError("Barcode already exists")
         return value
 
+
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
-    vendor_name = serializers.CharField(source='vendor.fullName', read_only=True)
-    createdBy_name = serializers.CharField(source='createdBy.fullName', read_only=True)
+    vendor_name = serializers.CharField(source="vendor.fullName", read_only=True)
+    createdBy_name = serializers.CharField(source="createdBy.fullName", read_only=True)
 
     class Meta:
         model = Order
-        fields = '__all__'
-        read_only_fields = ['createdBy']
+        fields = "__all__"
+        read_only_fields = ["createdBy"]
+        extra_kwargs = {
+            "lga": {"required": False},
+            "zone": {"required": False},
+        }
 
     def validate(self, data):
         if not data.get("items"):
@@ -42,17 +81,64 @@ class OrderSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
-        items_data = validated_data.pop('items')
+        items_data = validated_data.pop("items")
         source = self.context.get("source", "MANUAL")
         daddress = validated_data.get("delivery_address")
-        #lat, lng = geocode_address(daddress)
+        # lat, lng = geocode_address(daddress)
         order = Order.objects.create(**validated_data)
 
-        order_items = []
+        # order_items = []
 
+        # for item in items_data:
+        #     item_source = item.pop("source", source)
+        #     item_address = item.pop("delivery_address", daddress)
+        #     zone = item.pop("zone", None)
+        #     lga = item.pop("lga", None)
+        #     state = item.pop("state", None)
+
+        #     item["zone_id"] = zone.id if zone else None
+        #     item["lga_id"] = lga.id if lga else None
+        #     item["state_id"] = state.id if state else None
+
+        #     zone_name = zone.name if zone else ""
+        #     lga_name = lga.name if lga else ""
+        #     state_name = state.name if state else ""
+
+        #     lat, lng = (None, None)
+
+        #     if item_address and item_address.strip():
+
+        #         full_address = (
+        #             f"{item_address}, {zone_name}, {lga_name}, {state_name}, Nigeria"
+        #         )
+        #         lat, lng = geocode_address(full_address.strip())
+
+        #     # CREATE INITIAL TRACKING
+        #     create_tracking(
+        #         order_item=item,
+        #         stage="CREATED",
+        #         user=self.context["request"].user,
+        #         remark="Shipment created",
+        #     )
+
+        #     order_items.append(
+        #         OrderItem(
+        #             order=order,
+        #             source=item_source,
+        #             delivery_address=item_address,
+        #             flag="PENDING",
+        #             latitude=lat,
+        #             longitude=lng,
+        #             **item,
+        #         )
+        #     )
+
+        # OrderItem.objects.bulk_create(order_items)
         for item in items_data:
+
             item_source = item.pop("source", source)
             item_address = item.pop("delivery_address", daddress)
+
             zone = item.pop("zone", None)
             lga = item.pop("lga", None)
             state = item.pop("state", None)
@@ -64,29 +150,39 @@ class OrderSerializer(serializers.ModelSerializer):
             zone_name = zone.name if zone else ""
             lga_name = lga.name if lga else ""
             state_name = state.name if state else ""
-           
+
             lat, lng = (None, None)
 
             if item_address and item_address.strip():
 
-                full_address = f"{item_address}, {zone_name}, {lga_name}, {state_name}, Nigeria"
+                full_address = (
+                    f"{item_address}, {zone_name}, "
+                    f"{lga_name}, {state_name}, Nigeria"
+                )
+
                 lat, lng = geocode_address(full_address.strip())
 
-            order_items.append(
-                OrderItem(
-                    order=order,
-                    source=item_source,
-                    delivery_address=item_address,
-                    flag="PENDING",
-                    latitude=lat,
-                    longitude=lng,
-                    **item
-                )
+            # SAVE ORDER ITEM
+            order_item = OrderItem.objects.create(
+                order=order,
+                source=item_source,
+                delivery_address=item_address,
+                flag="PENDING",
+                latitude=lat,
+                longitude=lng,
+                **item,
             )
 
-        OrderItem.objects.bulk_create(order_items)
+            # CREATE TRACKING
+            create_tracking(
+                order_item=order_item,
+                stage="CREATED",
+                user=self.context["request"].user,
+                remark="Shipment created",
+            )
 
         return order
+
 
 class WarehouseScanSerializer(serializers.ModelSerializer):
     barcode = serializers.CharField(source="item.barcode", read_only=True)
@@ -100,8 +196,10 @@ class WarehouseScanSerializer(serializers.ModelSerializer):
     weight = serializers.CharField(source="item.weight", read_only=True)
 
     vendor = serializers.CharField(source="item.order.vendor.fullName", read_only=True)
-    overdue = serializers.SerializerMethodField( read_only=True)
-    holding_period = serializers.IntegerField(source="item.holding_period",read_only=True)
+    overdue = serializers.SerializerMethodField(read_only=True)
+    holding_period = serializers.IntegerField(
+        source="item.holding_period", read_only=True
+    )
 
     class Meta:
         model = WarehouseScan
@@ -118,78 +216,88 @@ class WarehouseScanSerializer(serializers.ModelSerializer):
             "time_in",
             "flag",
             "overdue",
-            "weight","holding_period"
+            "weight",
+            "holding_period",
         ]
-        extra_kwargs ={
-            "holding_period":{"required":False}
-        }
-      
+        extra_kwargs = {"holding_period": {"required": False}}
+
     def get_overdue(self, obj):
         return obj.is_over_24hrs()
+
 
 class DispatcherSerializer(serializers.ModelSerializer):
     fullName = serializers.SerializerMethodField()
     logistics_partner_name = serializers.SerializerMethodField()
-    #assigned_vehicle = serializers.CharField(source="agent.assignedVehicle",read_only=True)
-       
+    # assigned_vehicle = serializers.CharField(source="agent.assignedVehicle",read_only=True)
+
     class Meta:
         model = User
-        fields = ['id', 'fullName', 'dispatcher_type',"dispatcher_flag","date_joined","mobileNo","staffNo",
-                  "date_joined","logistics_partner_name","assignedVehicle"]
-        
+        fields = [
+            "id",
+            "fullName",
+            "dispatcher_type",
+            "dispatcher_flag",
+            "date_joined",
+            "mobileNo",
+            "staffNo",
+            "date_joined",
+            "logistics_partner_name",
+            "assignedVehicle",
+        ]
+
         read_only_fields = ("assigedVehicle",)
-        
 
     def get_fullName(self, obj):
         return obj.get_user_fullname or obj.username
+
     def get_logistics_partner_name(self, obj):
         if obj.partner:
             return obj.partner.name
-        return None  # 
-    def get_assignedVehicle(self,obj):
+        return None  #
+
+    def get_assignedVehicle(self, obj):
         return User.objects.get(id=obj.agent).assignedVehicle
-    
+
+
 class VehicleSerializer(serializers.ModelSerializer):
     createdBy_name = serializers.CharField(source="createdBy.fullName", read_only=True)
     logistics_partner_name = serializers.CharField(
-        source="logistics_partner.name",
-        read_only=True
+        source="logistics_partner.name", read_only=True
     )
-
 
     class Meta:
         model = Vehicle
         fields = "__all__"
         read_only_fields = ["createdBy", "createdAt"]
-    
+
     def get_logistics_partner_name(self, obj):
         if obj.logistics_partner:
             return obj.logistics_partner.name
         return None  # ✅ Always return something
 
     def validate(self, data):
-        owner_type = data.get('owner_type', getattr(self.instance, 'owner_type', None))
+        owner_type = data.get("owner_type", getattr(self.instance, "owner_type", None))
         logistics_partner = data.get(
-            'logistics_partner',
-            getattr(self.instance, 'logistics_partner', None)
+            "logistics_partner", getattr(self.instance, "logistics_partner", None)
         )
 
-        if owner_type == 'Partner' and not logistics_partner:
+        if owner_type == "Partner" and not logistics_partner:
             raise serializers.ValidationError(
                 {"logistics_partner": "This field is required for partner vehicles."}
             )
 
-        if owner_type == 'Company' and logistics_partner:
+        if owner_type == "Company" and logistics_partner:
             raise serializers.ValidationError(
-                {"logistics_partner": "Company vehicles should not have a logistics partner."}
+                {
+                    "logistics_partner": "Company vehicles should not have a logistics partner."
+                }
             )
 
         return data
 
+
 class BulkDispatchSerializer(serializers.Serializer):
-    barcodes = serializers.ListField(
-        child=serializers.CharField()
-    )
+    barcodes = serializers.ListField(child=serializers.CharField())
     agent_id = serializers.UUIDField()
     vehicle_id = serializers.IntegerField(required=False, allow_null=True)
 
@@ -200,7 +308,7 @@ class BulkDispatchSerializer(serializers.Serializer):
 
         # ✅ Validate dispatcher
         try:
-            agent = User.objects.get(id=agent_id, role='Dispatcher')
+            agent = User.objects.get(id=agent_id, role="Dispatcher")
         except User.DoesNotExist:
             raise serializers.ValidationError("Invalid dispatcher")
 
@@ -209,7 +317,7 @@ class BulkDispatchSerializer(serializers.Serializer):
         if vehicle_id:
             try:
                 vehicle = Vehicle.objects.get(id=vehicle_id)
-                if vehicle.vehicleStatus != 'Available':
+                if vehicle.vehicleStatus != "Available":
                     raise serializers.ValidationError("Vehicle not available")
             except Vehicle.DoesNotExist:
                 raise serializers.ValidationError("Vehicle not found")
@@ -225,25 +333,23 @@ class BulkDispatchSerializer(serializers.Serializer):
         # if already_dispatched.exists():
         #     raise serializers.ValidationError("Some items already dispatched")
         already_dispatched = OrderItem.objects.filter(
-                    barcode__in=barcodes,
-                    flag="OUT_FOR_DELIVERY"
-                )
+            barcode__in=barcodes, flag="OUT_FOR_DELIVERY"
+        )
 
         if already_dispatched.exists():
             raise serializers.ValidationError("Some items already dispatched")
 
-        data['agent'] = agent
-        data['vehicle'] = vehicle
-        data['items'] = items
+        data["agent"] = agent
+        data["vehicle"] = vehicle
+        data["items"] = items
 
         return data
- 
-   
+
     @transaction.atomic
     def create(self, validated_data):
-        agent = validated_data['agent']
-        vehicle = validated_data['vehicle']
-        items = validated_data['items']
+        agent = validated_data["agent"]
+        vehicle = validated_data["vehicle"]
+        items = validated_data["items"]
 
         dispatch_list = []
 
@@ -258,7 +364,7 @@ class BulkDispatchSerializer(serializers.Serializer):
                 barcode=item.barcode,
                 agent=agent,
                 vehicle=vehicle,
-                status="OUT_FOR_DELIVERY"
+                status="OUT_FOR_DELIVERY",
             )
 
             # ✅ UPDATE ORDER ITEM
@@ -276,36 +382,39 @@ class BulkDispatchSerializer(serializers.Serializer):
 
         # ✅ UPDATE VEHICLE STATUS (ONLY IF USED)
         if vehicle and dispatch_list:
-            vehicle.vehicleStatus = 'In Use'
+            vehicle.vehicleStatus = "In Use"
             vehicle.save()
 
         return dispatch_list
-    
+
+
 class PartnerSerializer(serializers.ModelSerializer):
     createdBy_name = serializers.CharField(source="createdBy.fullName", read_only=True)
+
     class Meta:
         model = LogisticsPartner
-        #fields = ['id', 'vehicleTag', 'vehicleNo', 'vehicleType']
-        fields ="__all__"
+        # fields = ['id', 'vehicleTag', 'vehicleNo', 'vehicleType']
+        fields = "__all__"
 
-   
+
 class DriverpickupSerializer(serializers.ModelSerializer):
     dispatch_hub = serializers.PrimaryKeyRelatedField(
-        queryset=Hub.objects.all(),
-        required=False,
-        allow_null=True
+        queryset=Hub.objects.all(), required=False, allow_null=True
     )
 
-    hub_name = serializers.CharField(
-        source="dispatch_hub.hubName",
-        read_only=True
-    )
+    hub_name = serializers.CharField(source="dispatch_hub.hubName", read_only=True)
 
     agent_name = serializers.CharField(source="agent.fullName", read_only=True)
     vehicle_no = serializers.CharField(source="vehicle.vehicleNo", read_only=True)
-    created_by_name = serializers.CharField(source="created_by.fullName", read_only=True)
-    vehicleWeight = serializers.CharField(source="vehicle.vehicleWeight", read_only=True)
-    assignedVehicle = serializers.CharField(source="agent.assignedVehicle", read_only=True)
+    created_by_name = serializers.CharField(
+        source="created_by.fullName", read_only=True
+    )
+    vehicleWeight = serializers.CharField(
+        source="vehicle.vehicleWeight", read_only=True
+    )
+    assignedVehicle = serializers.CharField(
+        source="agent.assignedVehicle", read_only=True
+    )
     total_items = serializers.SerializerMethodField()
 
     class Meta:
@@ -334,24 +443,28 @@ class DriverpickupSerializer(serializers.ModelSerializer):
             "vehicleWeight",
             "assignedVehicle",
             "hub_name",
-        ) 
-    def create(self, validated_data): # generate batch number 
-        batch_no = generate_staffNo("PWBN", "batchno") 
-        validated_data["batch_no"] = batch_no 
-        validated_data["created_at"] = timezone.now() 
+        )
+
+    def create(self, validated_data):  # generate batch number
+        batch_no = generate_staffNo("PWBN", "batchno")
+        validated_data["batch_no"] = batch_no
+        validated_data["created_at"] = timezone.now()
         return driverpickup.objects.create(**validated_data)
-    
-    def get_total_items(self, obj): 
+
+    def get_total_items(self, obj):
         return Dispatch.objects.filter(batch_no=obj.batch_no).count()
-    
+
+
 class DispatchSerializer(serializers.ModelSerializer):
     barcode = serializers.CharField(source="order_item.barcode")
     vehicleNo = serializers.CharField(source="vehicle.vehicleNo", default=None)
-    receiver= serializers.CharField(source="order_item.receiver_name",read_only=True)
-    address = serializers.CharField(source="order_item.delivery_address",read_only=True)    
-    phone = serializers.CharField(source="order_item.receiver_phone",read_only=True)
-    waybill = serializers.CharField(source="order_item.waybillNo",read_only=True)
-    weight = serializers.CharField(source="order_item.weight",read_only=True)
+    receiver = serializers.CharField(source="order_item.receiver_name", read_only=True)
+    address = serializers.CharField(
+        source="order_item.delivery_address", read_only=True
+    )
+    phone = serializers.CharField(source="order_item.receiver_phone", read_only=True)
+    waybill = serializers.CharField(source="order_item.waybillNo", read_only=True)
+    weight = serializers.CharField(source="order_item.weight", read_only=True)
     agent = serializers.CharField(source="agent.get_user_fullname", read_only=True)
 
     class Meta:
@@ -366,28 +479,38 @@ class DispatchSerializer(serializers.ModelSerializer):
             "waybill",
             "status",
             "assigned_at",
-            'weight','agent',"batch_no","delivered_at"
-            
+            "weight",
+            "agent",
+            "batch_no",
+            "delivered_at",
         ]
-        extra_kwargs ={
-           "delivered_at": {"required": False},
+        extra_kwargs = {
+            "delivered_at": {"required": False},
         }
+
 
 class HubSerializer(serializers.ModelSerializer):
-    state_name = serializers.CharField(source='hubState.name', read_only=True)
-    createdBy_name = serializers.CharField(source="createdBy.fullName",read_only=True)
+    state_name = serializers.CharField(source="hubState.name", read_only=True)
+    createdBy_name = serializers.CharField(source="createdBy.fullName", read_only=True)
 
     class Meta:
-        model=Hub
+        model = Hub
         fields = [
-            "id","hubName","hubAdd","hubState","city","hubStatus","createdBy","createdBy_name","state_name","createdAt"
+            "id",
+            "hubName",
+            "hubAdd",
+            "hubState",
+            "city",
+            "hubStatus",
+            "createdBy",
+            "createdBy_name",
+            "state_name",
+            "createdAt",
         ]
-        extra_kwargs ={
-             "createdAt": { "required": False},
-             "createdBy_name": { "required": False},
+        extra_kwargs = {
+            "createdAt": {"required": False},
+            "createdBy_name": {"required": False},
         }
-
-
 
 
 class HubTransferItemSerializer(serializers.ModelSerializer):
@@ -398,17 +521,18 @@ class HubTransferItemSerializer(serializers.ModelSerializer):
 
         def validate(self, data):
             if data["srchub"] == data["desthub"]:
-                raise serializers.ValidationError("Source and destination hub cannot be the same.")
+                raise serializers.ValidationError(
+                    "Source and destination hub cannot be the same."
+                )
             return data
-
 
 
 class HubTransferSerializer(serializers.ModelSerializer):
     items = HubTransferItemSerializer(many=True)
-    srch = serializers.CharField(source="srchub.hubName",read_only=True)
-    desth = serializers.CharField(source="desthub.hubName",read_only=True)
-    createdBy_user = serializers.CharField(source="created_by.fullName",read_only=True)
-    batchNo = serializers.CharField(source="batch_no.batch_no",read_only=True)
+    srch = serializers.CharField(source="srchub.hubName", read_only=True)
+    desth = serializers.CharField(source="desthub.hubName", read_only=True)
+    createdBy_user = serializers.CharField(source="created_by.fullName", read_only=True)
+    batchNo = serializers.CharField(source="batch_no.batch_no", read_only=True)
     total_items = serializers.SerializerMethodField()
 
     class Meta:
@@ -421,13 +545,26 @@ class HubTransferSerializer(serializers.ModelSerializer):
             "status",
             "created_by",
             "created_at",
-            "items","srch","desth","createdBy_user","batchNo","total_items","comment"
+            "items",
+            "srch",
+            "desth",
+            "createdBy_user",
+            "batchNo",
+            "total_items",
+            "comment",
         ]
-        read_only_fields = ["created_at","srch","desth","createdBy_user","batchNo","total_items",]
+        read_only_fields = [
+            "created_at",
+            "srch",
+            "desth",
+            "createdBy_user",
+            "batchNo",
+            "total_items",
+        ]
 
     def get_total_items(self, obj):
         return HubTransferItem.objects.filter(transfer_id=obj.id).count()
-    
+
     @transaction.atomic
     def create(self, validated_data):
         request = self.context.get("request")
@@ -436,9 +573,9 @@ class HubTransferSerializer(serializers.ModelSerializer):
         agent_id = request.data.get("agent_id")
         vehicle_id = request.data.get("vehicle_id")
 
-        agent = User.objects.get(pk=agent_id);
+        agent = User.objects.get(pk=agent_id)
         vehicle = Vehicle.objects.get(pk=vehicle_id)
-        
+
         transfer = HubTransfer.objects.create(**validated_data)
 
         dpup = driverpickup.objects.get(batch_no=str(transfer.batch_no.batch_no))
@@ -451,11 +588,13 @@ class HubTransferSerializer(serializers.ModelSerializer):
         for item_data in items_data:
             barcode = item_data.get("barcode")
 
-            HubTransferItem.objects.create(
-                transfer=transfer,
-                **item_data
+            HubTransferItem.objects.create(transfer=transfer, **item_data)
+            create_tracking(
+                order_item=item_data,
+                stage="HUB_TRANSFER",
+                user=request.user,
+                remark="Item Transferred to Hub",
             )
-
             if barcode:
                 barcodes.append(barcode)
 
@@ -510,9 +649,9 @@ class HubTransferSerializer(serializers.ModelSerializer):
                     "vehicle": vehicle,
                     "status": "IN_HUB_TRANSFER",
                     "assigned_by": request.user,
-                    "assigned_at":timezone.now(),
+                    "assigned_at": timezone.now(),
                     "batch_no": str(transfer.batch_no.batch_no),  # 👈 string batch
-                }
+                },
             )
 
             if not created:
@@ -524,8 +663,8 @@ class HubTransferSerializer(serializers.ModelSerializer):
 
         return transfer
 
-
     from django.db import transaction
+
     @transaction.atomic  # At Hub
     def update(self, instance, validated_data):
         items_data = validated_data.pop("items", None)
@@ -540,10 +679,13 @@ class HubTransferSerializer(serializers.ModelSerializer):
         #    Update existing HubTransferItem -> flag = WAREHOUSE
         # =====================================================
         if instance.status == "Received":
-            HubTransferItem.objects.filter(
-                transfer=instance
-            ).update(flag="WAREHOUSE")
-
+            HubTransferItem.objects.filter(transfer=instance).update(flag="WAREHOUSE")
+        create_tracking(
+            order_item=item,
+            stage="ARRIVED HUB WAREHOUSE",
+            user=instance["request"].user,
+            remark="Item Received at the Hub",
+        )
         # =====================================================
         # 2. If frontend sends items again
         #    Recreate items + update OrderItem + HubTransferItem
@@ -558,10 +700,7 @@ class HubTransferSerializer(serializers.ModelSerializer):
                 barcode = item.get("barcode")
 
                 # create new HubTransferItem
-                created_item = HubTransferItem.objects.create(
-                    transfer=instance,
-                    **item
-                )
+                created_item = HubTransferItem.objects.create(transfer=instance, **item)
 
                 # if transfer already marked received,
                 # ensure new item also gets WAREHOUSE
@@ -576,12 +715,10 @@ class HubTransferSerializer(serializers.ModelSerializer):
             # Update OrderItem flag -> PICKUP
             # =================================================
             if barcodes:
-                OrderItem.objects.filter(
-                    barcode__in=barcodes
-                ).update(flag="PICKUP")
+                OrderItem.objects.filter(barcode__in=barcodes).update(flag="PICKUP")
 
         return instance
-    
+
 
 class HubStoreSerializer(serializers.ModelSerializer):
     receiver_name = serializers.CharField(read_only=True)
@@ -590,11 +727,7 @@ class HubStoreSerializer(serializers.ModelSerializer):
     batch_no = serializers.CharField(read_only=True)
     holding_period = serializers.CharField(read_only=True)
     flag = serializers.CharField(read_only=True)
-    hub_name = serializers.CharField(
-        source="transfer.desthub.hubName",
-        read_only=True
-    )
-
+    hub_name = serializers.CharField(source="transfer.desthub.hubName", read_only=True)
 
     class Meta:
         model = HubTransferItem
@@ -605,6 +738,8 @@ class HubStoreSerializer(serializers.ModelSerializer):
             "receiver_name",
             "delivery_address",
             "waybillNo",
-            "batch_no","holding_period","flag",
-            "hub_name"
+            "batch_no",
+            "holding_period",
+            "flag",
+            "hub_name",
         ]

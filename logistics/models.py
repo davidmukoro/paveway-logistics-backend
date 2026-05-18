@@ -69,12 +69,16 @@ class OrderItem(models.Model):
         default=1,
         on_delete=models.DO_NOTHING,
         related_name="order_lga_items",
+        null=True,
+        blank=True,
     )
     zone = models.ForeignKey(
         "setup.Zone",
         default=1,
         on_delete=models.DO_NOTHING,
         related_name="zone_order_items",
+        null=True,
+        blank=True,
     )
     weight = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -467,3 +471,16 @@ class HubScan(models.Model):
 
     class Meta:
         db_table = "hubscan"
+
+
+class OrderItemTracking(models.Model):
+    order_item = models.ForeignKey(
+        OrderItem, related_name="tracking_history", on_delete=models.CASCADE
+    )
+    stage = models.CharField(max_length=100)
+    remark = models.TextField(blank=True, null=True)
+    updated_by = models.ForeignKey("setup.User", on_delete=models.SET_NULL, null=True)
+    updated_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["updated_at"]

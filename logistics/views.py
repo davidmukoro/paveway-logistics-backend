@@ -3,8 +3,10 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 from rest_framework import status
+from finance.utils import compute_customer_wallet_balance
 from setup.utils import AuditedModelViewSet
 from .services.vendor_service import fetch_vendor_orders
+from django.db.models import Q
 from .models import (
     DispatchHistory,
     HubTransfer,
@@ -17,9 +19,11 @@ from .models import (
     AgentLocation,
     HubTransferItem,
     HubScan,
+    OrderItemTracking,
 )
 from .serializers import (
     BulkDispatchSerializer,
+    OrderItemSerializer,
     OrderSerializer,
     WarehouseScanSerializer,
     HubSerializer,
@@ -28,9 +32,16 @@ from .serializers import (
     DriverpickupSerializer,
     HubTransferSerializer,
     HubStoreSerializer,
+    WayBillHistorySerializer,
+    OrderItemTrackingSerializer,
 )
 from django.utils import timezone
-from .utils import generate_delivery_code, generate_waybill_no, normalize_vendor_payload
+from .utils import (
+    create_tracking,
+    generate_delivery_code,
+    generate_waybill_no,
+    normalize_vendor_payload,
+)
 from setup.models import User
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -43,6 +54,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status, permissions
 from .serializers import VehicleSerializer, DispatcherSerializer
+from finance.models import WalletFunding
 
 # from rest_framework.views import APIView
 from django.utils import timezone
@@ -57,6 +69,58 @@ from django.db.models import Count, F, Q, OuterRef, Subquery
 from collections import defaultdict
 from rest_framework import status as http_status
 from django.http import JsonResponse
+from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework import status
+
+
+class WaybillHistory(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        # If staff → return all orders
+        if user.is_staff:
+            orders = Order.objects.all()
+        else:
+            # Non-staff → return only user's orders
+            orders = Order.objects.filter(vendor_id=user.id)
+
+        orders = OrderItem.objects.select_related("order").order_by("-order_id")
+
+        serializer = WayBillHistorySerializer(orders, many=True)
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class OrderItemTrackingView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = OrderItemTrackingSerializer(data=request.data)
+
+        if serializer.is_valid():
+            serializer.save(updated_by=request.user)
+
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def get(self, request, search):
+
+        tracking = (
+            OrderItemTracking.objects.select_related("order_item", "updated_by")
+            .filter(
+                Q(order_item__barcode__iexact=search)
+                | Q(order_item__waybillNo__iexact=search)
+            )
+            .order_by("-updated_at")
+        )
+
+        serializer = OrderItemTrackingSerializer(tracking, many=True)
+
+        return Response(serializer.data)
 
 
 class CreateOrderView(APIView):
@@ -92,6 +156,71 @@ class CreateOrderView(APIView):
             )
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["POST"])
+def create_order_with_wallet_deduction(request):
+    try:
+        data = request.data
+
+        with transaction.atomic():
+
+            # 1. Check Balance
+            total_bill = float(data["totalBill"])
+            customer_balance = compute_customer_wallet_balance(data["vendor"])
+            # customer_balance = float(data["customerBalance"])
+
+            if customer_balance < total_bill:
+                return Response(
+                    {"message": "Insufficient Balance"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # 2. Deduct Wallet
+            WalletFunding.objects.create(
+                customer_id=data["vendor"],
+                transactionDate=timezone.now(),
+                txntype="Expense",
+                amount=-total_bill,
+                txnRef=data["vendor_order_no"],
+                narration=f"Billing for {data['vendor_order_no']}",
+                postedBy=request.user.fullName,
+            )
+
+            # 3. Create Order using existing serializer
+            serializer = OrderSerializer(
+                data=data,
+                context={
+                    "request": request,
+                    "source": data.get("source"),
+                },
+            )
+
+            if not serializer.is_valid():
+
+                # Raising exception ensures rollback
+                transaction.set_rollback(True)
+
+                return Response(
+                    serializer.errors,
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            order = serializer.save(createdBy=request.user)
+
+        return Response(
+            {
+                "message": "Order created successfully",
+                "order_id": str(order.id),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    except Exception as e:
+        return Response(
+            {"message": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 class VendorFetchView(APIView):
@@ -264,6 +393,14 @@ class WarehouseScanView(APIView):
             item.flag = "WAREHOUSE"
             # item.delivery_fee=0. calculate it and lookup pricing template.
             item.save()
+
+            # update tracking
+            create_tracking(
+                order_item=item,
+                stage="WAREHOUSE",
+                user=request.user,
+                remark="Item Scanned into Warehouse",
+            )
 
             # create warehouse record
             scan = WarehouseScan.objects.create(item=item, createdBy=request.user)
@@ -837,6 +974,13 @@ class dispatcherPickupView(APIView):
                 )
                 item.save()
 
+                create_tracking(
+                    order_item=item,
+                    stage="PICKED_UP",
+                    user=request.user,
+                    remark="Item Picked Up for Delivery",
+                )
+
             # ===============================
             # ✅ SEND ONE EMAIL PER RECEIVER
             # ===============================
@@ -945,6 +1089,12 @@ class dispatcherPickupView(APIView):
             # ===============================
             # ✅ UPDATE WAREHOUSE SCAN
             # ===============================
+            create_tracking(
+                order_item=item,
+                stage="HUB_TRANSFER",
+                user=request.user,
+                remark="Item Transferred to Hub",
+            )
             scan = getattr(item, "warehouse_scan", None)
             # scan = WarehouseScan.objects.filter(item=item).first()
             if scan:  # and not scan.time_out:
@@ -983,7 +1133,12 @@ class dispatcherPickupView(APIView):
                     created_at=timezone.now(),
                     scanned_by=request.user,
                 )
-
+                create_tracking(
+                    order_item=item,
+                    stage="PICKED_UP_FROM_HUB",
+                    user=self.context["request"].user,
+                    remark="Item Picked up from Hub to Delivery",
+                )
                 # UPDATE ITEM
                 item.flag = "PICKED_UP"
                 item.delivery_otp = otp
@@ -1552,11 +1707,23 @@ class UpdateDeliveryStatus(APIView):
         item.flag = status
         item.save()
 
+        create_tracking(
+            order_item=item,
+            stage=status,
+            user=request.user,
+            remark="Item is " + status,
+        )
+
         # ✅ Update Dispatch
         disp = getattr(item, "dispatch", None)
         if disp:
             disp.status = status
-
+            create_tracking(
+                order_item=item,
+                stage=status,
+                user=request.user,
+                remark="Item is " + status,
+            )
             # Save issue only when needed
             if status in ISSUE_REQUIRED_STATUSES:
                 disp.issue_reason = issue
@@ -1568,6 +1735,133 @@ class UpdateDeliveryStatus(APIView):
             disp.save()
 
         return Response({"message": "Status updated successfully"})
+
+
+class UpdateDeliveryStatusFlag(APIView):
+
+    @transaction.atomic
+    def patch(self, request):
+
+        barcodes = request.data.get("barcodes", [])
+        status = request.data.get("status")
+        otp = request.data.get("otp")
+        issue = request.data.get("issue")
+
+        # ✅ Validate input
+        if not barcodes or not isinstance(barcodes, list):
+            return Response(
+                {"error": "Barcodes list is required"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not status:
+            return Response(
+                {"error": "Status is required"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        if status not in VALID_STATUSES:
+            return Response(
+                {"error": "Invalid status"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ✅ Fetch all items
+        items = OrderItem.objects.filter(barcode__in=barcodes)
+
+        if not items.exists():
+            return Response(
+                {"error": "No items found"},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        # ✅ OTP validation
+        if status == "DELIVERED":
+
+            if not otp:
+                return Response(
+                    {"error": "OTP is required for delivery"},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Validate against first item
+            first_item = items.first()
+
+            if first_item.delivery_otp != otp:
+                return Response(
+                    {"error": "Invalid OTP"},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+        # ✅ Issue validation
+        if status in ISSUE_REQUIRED_STATUSES:
+
+            if not issue or issue.strip() == "":
+                return Response(
+                    {"error": "Issue reason is required"},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+        updated_items = []
+
+        # ✅ Loop through all grouped items
+        for item in items:
+
+            # -----------------------------------
+            # UPDATE WAREHOUSE SCAN
+            # -----------------------------------
+            scan = getattr(item, "warehouse_scan", None)
+
+            if scan:
+                scan.flag = status
+                scan.updatedBy = request.user.fullName
+                scan.lastUpdatedat = timezone.now()
+                scan.save()
+
+            # -----------------------------------
+            # UPDATE ORDER ITEM
+            # -----------------------------------
+            item.flag = status
+            item.save()
+
+            # -----------------------------------
+            # TRACKING
+            # -----------------------------------
+            create_tracking(
+                order_item=item,
+                stage=status,
+                user=request.user,
+                remark=f"Item is {status}",
+            )
+
+            # -----------------------------------
+            # UPDATE DISPATCH
+            # -----------------------------------
+            disp = getattr(item, "dispatch", None)
+
+            if disp:
+
+                disp.status = status
+
+                # Save issue reason
+                if status in ISSUE_REQUIRED_STATUSES:
+                    disp.issue_reason = issue
+
+                # Delivered timestamp
+                if status == "DELIVERED":
+                    disp.delivered_at = timezone.now()
+
+                disp.save()
+
+            updated_items.append(item.barcode)
+
+        return Response(
+            {
+                "message": "Bulk status updated successfully",
+                "updated": updated_items,
+                "count": len(updated_items),
+            }
+        )
 
 
 def reassign_dispatch(dispatch, new_agent, new_vehicle, user):

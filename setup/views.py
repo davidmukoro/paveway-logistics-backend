@@ -1144,8 +1144,10 @@ class PricingViewSet(AuditedModelViewSet):
             objs.append(
                 Pricing(
                     subarea=item.get("subarea"),
+                    basekg=item.get("basekg"),
                     price=item.get("price"),
                     extrakg=item.get("extrakg"),
+                    extraprice=item.get("extraprice"),
                     pricetype=item.get("pricetype"),
                     createdBy_id=item.get("createdBy"),
                 )

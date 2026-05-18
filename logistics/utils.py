@@ -1,4 +1,6 @@
 import requests
+
+
 def normalize_vendor_payload(data, vendor_id):
     """
     Converts vendor API payload into internal order format
@@ -7,27 +9,28 @@ def normalize_vendor_payload(data, vendor_id):
     items = []
 
     for item in data.get("items", []):
-        items.append({
-            "barcode": item.get("barcode"),
-            "sender_name": item.get("sender_name"),
-            "sender_phone": item.get("sender_phone"),
-            "receiver_name": item.get("receiver_name"),
-            "receiver_phone": item.get("receiver_phone"),
-            "delivery_address": item.get("address"),
-            "state": item.get("state_id"),
-            "lga": item.get("lga_id"),
-            "zone": item.get("zone_id"),
-            "weight": item.get("weight"),
-            "worth": item.get("worth"),
-        })
+        items.append(
+            {
+                "barcode": item.get("barcode"),
+                "sender_name": item.get("sender_name"),
+                "sender_phone": item.get("sender_phone"),
+                "receiver_name": item.get("receiver_name"),
+                "receiver_phone": item.get("receiver_phone"),
+                "delivery_address": item.get("address"),
+                "state": item.get("state_id"),
+                "lga": item.get("lga_id"),
+                "zone": item.get("zone_id"),
+                "weight": item.get("weight"),
+                "worth": item.get("worth"),
+            }
+        )
 
     return {
         "vendor": vendor_id,
         "vendor_order_no": data.get("order_no"),
         "source": "API",
-        "items": items
+        "items": items,
     }
-
 
 
 def fetch_vendor_orders(vendor):
@@ -40,13 +43,12 @@ def fetch_vendor_orders(vendor):
         headers["X-API-KEY"] = vendor.api_key
 
     response = requests.get(
-        vendor.api_base_url + "/orders",
-        headers=headers,
-        timeout=10
+        vendor.api_base_url + "/orders", headers=headers, timeout=10
     )
 
     response.raise_for_status()
     return response.json()
+
 
 def get_vendor_mocked_data(vendor_id):
     return {
@@ -63,9 +65,9 @@ def get_vendor_mocked_data(vendor_id):
                 "lga_id": 1,
                 "zone_id": 3,
                 "weight": 2.5,
-                "worth":4000
+                "worth": 4000,
             },
-             {
+            {
                 "barcode": "ABC12332324",
                 "receiver_name": "John Doe",
                 "receiver_phone": "08012345678",
@@ -76,9 +78,9 @@ def get_vendor_mocked_data(vendor_id):
                 "lga_id": 1,
                 "zone_id": 4,
                 "weight": 5,
-                "worth":7000
+                "worth": 7000,
             },
-             {
+            {
                 "barcode": "ABC12332325",
                 "receiver_name": "John Doe",
                 "receiver_phone": "08012345678",
@@ -89,9 +91,9 @@ def get_vendor_mocked_data(vendor_id):
                 "lga_id": 1,
                 "zone_id": 3,
                 "weight": 4,
-                "worth":1000
+                "worth": 1000,
             },
-             {
+            {
                 "barcode": "ABC12332325",
                 "receiver_name": "Isaac Olawale",
                 "receiver_phone": "08012345678",
@@ -102,19 +104,21 @@ def get_vendor_mocked_data(vendor_id):
                 "lga_id": 1,
                 "zone_id": 3,
                 "weight": 12,
-                "worth":15000
-            }
-        ]
+                "worth": 15000,
+            },
+        ],
     }
 
 
 import requests
+
+
 def get_vendor_data(vendor):
     try:
         response = requests.get(
             f"{vendor.api_base_url}?vendor_id={vendor.id}",
             headers={"Authorization": f"Bearer {vendor.api_key}"},
-            timeout=10
+            timeout=10,
         )
         response.raise_for_status()
         return response.json()
@@ -124,7 +128,7 @@ def get_vendor_data(vendor):
 
     except requests.exceptions.RequestException as e:
         raise Exception(f"Vendor API error: {str(e)}")
-    
+
 
 import random
 import string
@@ -136,12 +140,11 @@ def generate_waybill_no(src: str) -> str:
     Generate a waybill number in format: SRC-YYYYMMDD-XXXXXX
     """
     # Format date as YYYYMMDD
-    formatted_date = datetime.utcnow().strftime('%Y%m%d')
+    formatted_date = datetime.utcnow().strftime("%Y%m%d")
 
     # Generate random alphanumeric string of length 6
-    random_alphanumeric = ''.join(
-        random.choice(string.ascii_uppercase + string.digits)
-        for _ in range(6)
+    random_alphanumeric = "".join(
+        random.choice(string.ascii_uppercase + string.digits) for _ in range(6)
     )
 
     return f"{src}-{formatted_date}-{random_alphanumeric}"
@@ -153,15 +156,13 @@ def generate_delivery_code() -> str:
     """
     characters = string.ascii_uppercase + string.digits
 
-    delivery_code = ''.join(
-        random.choice(characters)
-        for _ in range(7)
-    )
+    delivery_code = "".join(random.choice(characters) for _ in range(7))
 
     return delivery_code
 
 
 import requests
+
 
 def geocode_address(address):
     url = "https://nominatim.openstreetmap.org/search"
@@ -173,10 +174,7 @@ def geocode_address(address):
 
     try:
         response = requests.get(
-            url,
-            params=params,
-            headers={"User-Agent": "pavewaylogistics"},
-            timeout=10
+            url, params=params, headers={"User-Agent": "pavewaylogistics"}, timeout=10
         )
 
         if response.status_code != 200:
@@ -201,3 +199,22 @@ def geocode_address(address):
     except Exception as e:
         print("Geocoding exception:", str(e))
         return None, None
+
+    # utils.py OR services.py
+
+
+from .models import OrderItemTracking
+
+
+def create_tracking(
+    order_item,
+    stage,
+    user,
+    remark=None,
+):
+    return OrderItemTracking.objects.create(
+        order_item=order_item,
+        stage=stage,
+        updated_by=user,
+        remark=remark,
+    )

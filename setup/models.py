@@ -112,6 +112,11 @@ class User(AbstractUser):
     kin_relationship = models.CharField(max_length=50, null=True, blank=True)
     kin_address = models.CharField(max_length=255, null=True, blank=True)
     paystaff = models.BooleanField(default=False)
+    guarantor = models.CharField(max_length=255, null=True, blank=True)
+    guarantor_add = models.CharField(max_length=255, null=True, blank=True)
+    guarantor_nin = models.CharField(max_length=255, null=True, blank=True)
+    guarantor_rship = models.CharField(max_length=255, null=True, blank=True)
+    guarantor_mobile = models.CharField(max_length=255, null=True, blank=True)
 
     def clean(self):
         if self.role == "Dispatcher":
@@ -283,7 +288,9 @@ class ExpenseCategory(models.Model):
 class Pricing(models.Model):
     subarea = models.CharField(max_length=100, default="")
     price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    basekg = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     extrakg = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    extraprice = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     pricetype = models.CharField(max_length=100, default="")  # local/interstate
     createdBy = models.ForeignKey(
         "setup.user", on_delete=models.SET_NULL, related_name="price_creator", null=True
