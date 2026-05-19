@@ -39,6 +39,7 @@ from .views import (
     create_order_with_wallet_deduction,
     UpdateDeliveryStatusFlag,
     OrderItemTrackingView,
+    TrackWayBill,
 )
 from rest_framework.routers import DefaultRouter
 
@@ -61,6 +62,7 @@ urlpatterns = router.urls + [
         "track-my-orders/<str:search>/",
         OrderItemTrackingView.as_view(),
     ),
+    path("track-waybill/<str:waybill>/", TrackWayBill.as_view()),
     path("vendor-fetch/", VendorFetchView.as_view()),
     path("upload-preview/", OrderUploadPreviewView.as_view()),
     path("warehouse/scan/", WarehouseScanView.as_view()),

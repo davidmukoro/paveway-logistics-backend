@@ -270,6 +270,7 @@ class StaffSerializer(serializers.ModelSerializer):
             "guarantor_mobile",
             "guarantor_rship",
             "guarantor_nin",
+            "item",
         ]
 
         extra_kwargs = {
@@ -296,6 +297,7 @@ class StaffSerializer(serializers.ModelSerializer):
             "guarantor_mobile": {"required": False},
             "guarantor_rship": {"required": False},
             "guarantor_nin": {"required": False},
+            "item": {"required": False},
         }
 
     def to_internal_value(self, data):
@@ -426,6 +428,7 @@ class GetStaffList(serializers.ModelSerializer):
             "guarantor_mobile",
             "guarantor_rship",
             "guarantor_nin",
+            "item",
         ]
 
     def get_partner_name(self, obj):

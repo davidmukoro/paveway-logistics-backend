@@ -117,6 +117,7 @@ class User(AbstractUser):
     guarantor_nin = models.CharField(max_length=255, null=True, blank=True)
     guarantor_rship = models.CharField(max_length=255, null=True, blank=True)
     guarantor_mobile = models.CharField(max_length=255, null=True, blank=True)
+    item = models.TextField(max_length=700, null=True, blank=True)
 
     def clean(self):
         if self.role == "Dispatcher":

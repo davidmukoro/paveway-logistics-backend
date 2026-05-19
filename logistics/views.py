@@ -48,10 +48,8 @@ from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 import pandas as pd
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from rest_framework import status, permissions
 from .serializers import VehicleSerializer, DispatcherSerializer
 from finance.models import WalletFunding
@@ -114,6 +112,25 @@ class OrderItemTrackingView(APIView):
             .filter(
                 Q(order_item__barcode__iexact=search)
                 | Q(order_item__waybillNo__iexact=search)
+            )
+            .order_by("-updated_at")
+        )
+
+        serializer = OrderItemTrackingSerializer(tracking, many=True)
+
+        return Response(serializer.data)
+
+
+class TrackWayBill(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, waybill):
+
+        tracking = (
+            OrderItemTracking.objects.select_related("order_item", "updated_by")
+            .filter(
+                Q(order_item__barcode__iexact=waybill)
+                | Q(order_item__waybillNo__iexact=waybill)
             )
             .order_by("-updated_at")
         )
