@@ -40,6 +40,7 @@ from .views import (
     UpdateDeliveryStatusFlag,
     OrderItemTrackingView,
     TrackWayBill,
+    WarehouseScanViewSet,
 )
 from rest_framework.routers import DefaultRouter
 
@@ -47,6 +48,7 @@ router = DefaultRouter()
 router.register(r"hubs", HubViewSet, basename="hub")
 router.register(r"hubtxns", HubTransferViewSet, basename="hubtxn")
 router.register(r"hubstore", HubstoreViewSet, basename="hub-store")
+router.register(r"warehouse-scan", WarehouseScanViewSet)
 
 
 urlpatterns = router.urls + [

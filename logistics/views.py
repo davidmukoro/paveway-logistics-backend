@@ -1990,3 +1990,65 @@ class HubstoreViewSet(AuditedModelViewSet):
             .select_related("transfer", "transfer__desthub")
             .order_by("-id")
         )
+
+
+from django.utils import timezone
+from datetime import timedelta
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework import status
+
+from .models import WarehouseScan
+from .serializers import WarehouseHoldingReportSerializer
+
+
+class WarehouseScanViewSet(AuditedModelViewSet):
+    queryset = WarehouseScan.objects.all()
+    serializer_class = WarehouseHoldingReportSerializer
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="holding-period-report",
+    )
+    def holding_period_report(self, request):
+        now = timezone.now()
+
+        scans = (
+            WarehouseScan.objects.select_related(
+                "item",
+                "item__state",
+                "item__lga",
+            )
+            .filter(
+                flag="IN_WAREHOUSE",
+                time_out__isnull=True,
+                item__flag="WAREHOUSE",
+            )
+            .order_by("-time_in")
+        )
+
+        exceeded_items = []
+
+        for scan in scans:
+            limit_time = scan.time_in + timedelta(hours=scan.item.holding_period)
+
+            if now > limit_time:
+                exceeded_items.append(scan)
+
+        serializer = WarehouseHoldingReportSerializer(
+            exceeded_items,
+            many=True,
+        )
+
+        total_items = len(exceeded_items)
+        total_worth = sum([item.item.worth for item in exceeded_items])
+
+        return Response(
+            {
+                "count": total_items,
+                "totalWorth": total_worth,
+                "results": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )

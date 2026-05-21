@@ -743,3 +743,67 @@ class HubStoreSerializer(serializers.ModelSerializer):
             "flag",
             "hub_name",
         ]
+
+
+from rest_framework import serializers
+from django.utils import timezone
+from datetime import timedelta
+
+from .models import WarehouseScan
+
+
+class WarehouseHoldingReportSerializer(serializers.ModelSerializer):
+    barcode = serializers.CharField(source="item.barcode")
+    description = serializers.CharField(source="item.description")
+    sender_name = serializers.CharField(source="item.sender_name")
+    receiver_name = serializers.CharField(source="item.receiver_name")
+    receiver_phone = serializers.CharField(source="item.receiver_phone")
+    delivery_address = serializers.CharField(source="item.delivery_address")
+    state = serializers.CharField(source="item.state.name")
+    lga = serializers.SerializerMethodField()
+    holding_period = serializers.IntegerField(source="item.holding_period")
+    hours_in_warehouse = serializers.SerializerMethodField()
+    exceeded_by_hours = serializers.SerializerMethodField()
+    orderNo = serializers.CharField(source="item.order.order_no")
+    vendor_name = serializers.CharField(source="item.order.vendor.fullName")
+    worth = serializers.DecimalField(
+        source="item.worth",
+        max_digits=10,
+        decimal_places=2,
+        read_only=True,
+    )
+
+    class Meta:
+        model = WarehouseScan
+        fields = [
+            "id",
+            "barcode",
+            "description",
+            "sender_name",
+            "receiver_name",
+            "receiver_phone",
+            "delivery_address",
+            "state",
+            "lga",
+            "orderNo",
+            "worth",
+            "time_in",
+            "holding_period",
+            "hours_in_warehouse",
+            "exceeded_by_hours",
+            "flag",
+            "vendor_name",
+        ]
+
+    def get_lga(self, obj):
+        return obj.item.lga.name if obj.item.lga else ""
+
+    def get_hours_in_warehouse(self, obj):
+        diff = timezone.now() - obj.time_in
+        return round(diff.total_seconds() / 3600, 1)
+
+    def get_exceeded_by_hours(self, obj):
+        diff = timezone.now() - obj.time_in
+        total_hours = diff.total_seconds() / 3600
+        exceeded = total_hours - obj.item.holding_period
+        return round(max(exceeded, 0), 1)
