@@ -41,6 +41,7 @@ from .views import (
     OrderItemTrackingView,
     TrackWayBill,
     WarehouseScanViewSet,
+    PendingWarehouseScanReportView,
 )
 from rest_framework.routers import DefaultRouter
 
@@ -52,6 +53,11 @@ router.register(r"warehouse-scan", WarehouseScanViewSet)
 
 
 urlpatterns = router.urls + [
+    path(
+        "pending-warehouse-scan/",
+        PendingWarehouseScanReportView.as_view(),
+        name="pending-warehouse-scan-report",
+    ),
     path(
         "order-with-wallet/",
         views.create_order_with_wallet_deduction,

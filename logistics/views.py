@@ -70,6 +70,13 @@ from django.http import JsonResponse
 from django.db import transaction
 from rest_framework.decorators import api_view
 from rest_framework import status
+from django.utils import timezone
+from datetime import timedelta
+from rest_framework.decorators import action
+from .serializers import (
+    PendingWarehouseScanReportSerializer,
+    WarehouseHoldingReportSerializer,
+)
 
 
 class WaybillHistory(APIView):
@@ -1992,16 +1999,6 @@ class HubstoreViewSet(AuditedModelViewSet):
         )
 
 
-from django.utils import timezone
-from datetime import timedelta
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework import status
-
-from .models import WarehouseScan
-from .serializers import WarehouseHoldingReportSerializer
-
-
 class WarehouseScanViewSet(AuditedModelViewSet):
     queryset = WarehouseScan.objects.all()
     serializer_class = WarehouseHoldingReportSerializer
@@ -2051,4 +2048,46 @@ class WarehouseScanViewSet(AuditedModelViewSet):
                 "results": serializer.data,
             },
             status=status.HTTP_200_OK,
+        )
+
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+
+from .models import OrderItem
+from .serializers import PendingWarehouseScanReportSerializer
+
+
+class PendingWarehouseScanReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+
+        queryset = (
+            OrderItem.objects.filter(
+                flag="PENDING",
+                scanned_at__isnull=False,
+            )
+            .select_related(
+                "order",
+                "order__vendor",
+                "state",
+                "lga",
+                "zone",
+            )
+            .order_by("scanned_at")
+        )
+
+        serializer = PendingWarehouseScanReportSerializer(
+            queryset,
+            many=True,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "count": queryset.count(),
+                "data": serializer.data,
+            }
         )

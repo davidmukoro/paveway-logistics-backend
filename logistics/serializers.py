@@ -745,13 +745,6 @@ class HubStoreSerializer(serializers.ModelSerializer):
         ]
 
 
-from rest_framework import serializers
-from django.utils import timezone
-from datetime import timedelta
-
-from .models import WarehouseScan
-
-
 class WarehouseHoldingReportSerializer(serializers.ModelSerializer):
     barcode = serializers.CharField(source="item.barcode")
     description = serializers.CharField(source="item.description")
@@ -807,3 +800,76 @@ class WarehouseHoldingReportSerializer(serializers.ModelSerializer):
         total_hours = diff.total_seconds() / 3600
         exceeded = total_hours - obj.item.holding_period
         return round(max(exceeded, 0), 1)
+
+
+from rest_framework import serializers
+from django.utils import timezone
+from .models import OrderItem
+
+
+class PendingWarehouseScanReportSerializer(serializers.ModelSerializer):
+    order_number = serializers.CharField(source="order.order_no", read_only=True)
+
+    customer_name = serializers.CharField(
+        source="order.vendor.fullName",
+        read_only=True,
+    )
+
+    customer_phone = serializers.CharField(
+        source="order.vendor.mobileNo",
+        read_only=True,
+    )
+
+    waiting_days = serializers.SerializerMethodField()
+    waiting_duration = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrderItem
+        fields = [
+            "id",
+            "barcode",
+            "description",
+            "order_number",
+            "customer_name",
+            "customer_phone",
+            "qty",
+            "flag",
+            "sender_name",
+            "sender_phone",
+            "receiver_name",
+            "receiver_phone",
+            "delivery_address",
+            "waybillNo",
+            "scanned_at",
+            "waiting_days",
+            "waiting_duration",
+        ]
+
+    def get_waiting_days(self, obj):
+        if obj.scanned_at:
+            diff = timezone.now() - obj.scanned_at
+            return diff.days
+        return 0
+
+    def get_waiting_duration(self, obj):
+        if not obj.scanned_at:
+            return "N/A"
+
+        diff = timezone.now() - obj.scanned_at
+
+        days = diff.days
+        hours, remainder = divmod(diff.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+
+        parts = []
+
+        if days > 0:
+            parts.append(f"{days} day{'s' if days > 1 else ''}")
+
+        if hours > 0:
+            parts.append(f"{hours} hr{'s' if hours > 1 else ''}")
+
+        if minutes > 0:
+            parts.append(f"{minutes} min{'s' if minutes > 1 else ''}")
+
+        return " ".join(parts) if parts else "Just now"

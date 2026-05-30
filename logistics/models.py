@@ -109,6 +109,12 @@ class OrderItem(models.Model):
     def __str__(self):
         return self.barcode
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["flag"]),
+            models.Index(fields=["scanned_at"]),
+        ]
+
 
 class WarehouseScan(models.Model):
     item = models.OneToOneField(

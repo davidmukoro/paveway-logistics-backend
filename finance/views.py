@@ -24,6 +24,8 @@ from decimal import Decimal
 from django.db.models import Sum
 from django.utils.dateparse import parse_date
 from collections import defaultdict
+from django.utils.dateparse import parse_date
+from logistics.models import Dispatch
 
 
 class WalletFundingViewSet(AuditedModelViewSet):
@@ -384,3 +386,334 @@ class ReportViewSet(AuditedModelViewSet):
                 "trend_data": trend_data,
             }
         )
+
+    @action(detail=False, methods=["get"], url_path="expense-by-category")
+    def expense_by_category(self, request):
+
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+        category_id = request.query_params.get("category")
+
+        if not start_date or not end_date or not category_id:
+            return Response(
+                {"detail": "start_date, end_date and category are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        start_date = parse_date(start_date)
+        end_date = parse_date(end_date)
+
+        # =========================
+        # FILTER EXPENSES
+        # =========================
+
+        qs = Expense.objects.filter(
+            postedAt__range=[start_date, end_date], category_id=category_id
+        ).order_by("-postedAt")
+
+        # =========================
+        # SUMMARY
+        # =========================
+
+        summary = qs.aggregate(total_amount=Sum("amount"), total_count=Count("id"))
+
+        total_amount = summary["total_amount"] or 0
+        total_count = summary["total_count"] or 0
+
+        # =========================
+        # SERIALIZE LIST
+        # =========================
+
+        data = [
+            {
+                "id": x.id,
+                "amount": float(x.amount),
+                "description": x.description,
+                "expenseDate": x.expenseDate,
+                "postedAt": x.postedAt,
+                "postedBy": str(x.postedBy) if x.postedBy else None,
+                "staff": str(x.staff.fullName) if x.staff else None,
+            }
+            for x in qs
+        ]
+
+        return Response(
+            {
+                "category": category_id,
+                "start_date": start_date,
+                "end_date": end_date,
+                "total_amount": float(total_amount),
+                "total_count": total_count,
+                "data": data,
+            }
+        )
+
+    @action(detail=False, methods=["get"], url_path="driver-performance")
+    def driver_performance(self, request):
+        start_date = parse_date(request.query_params.get("start_date"))
+        end_date = parse_date(request.query_params.get("end_date"))
+
+        start_dt = timezone.make_aware(
+            datetime.combine(start_date, datetime.min.time())
+        )
+
+        end_dt = timezone.make_aware(datetime.combine(end_date, datetime.max.time()))
+
+        if not start_date or not end_date:
+            return Response(
+                {"detail": "start_date and end_date are required"},
+                status=400,
+            )
+
+        # ==================================================
+        # DATE-ONLY FILTER (NO TIME, NO TIMEZONE ISSUES)
+        # ==================================================
+
+        drivers = (
+            Dispatch.objects.filter(assigned_at__range=[start_dt, end_dt])
+            .values(
+                "agent__id",
+                "agent__staffNo",
+                "agent__first_name",
+                "agent__last_name",
+            )
+            .annotate(
+                total_dispatches=Count("id"),
+                delivered=Count("id", filter=Q(status="DELIVERED")),
+                returned=Count("id", filter=Q(status="RETURNED")),
+                in_transit=Count(
+                    "id",
+                    filter=Q(
+                        status__in=[
+                            "IN_TRANSIT",
+                            "PICKED_UP",
+                            "IN_HUB_TRANSFER",
+                            "OUT_FOR_DELIVERY",
+                        ]
+                    ),
+                ),
+                issues=Count(
+                    "id", filter=Q(status__in=["ISSUE", "DAMAGED", "PARTIAL"])
+                ),
+            )
+            .order_by("-total_dispatches")
+        )
+        results = []
+
+        for driver in drivers:
+
+            total = driver["total_dispatches"] or 0
+            delivered = driver["delivered"] or 0
+
+            success_rate = round((delivered / total * 100), 2) if total else 0
+
+            results.append(
+                {
+                    "driver_id": driver["agent__id"],
+                    "staff_no": driver["agent__staffNo"],
+                    "driver_name": f"{driver['agent__first_name']} {driver['agent__last_name']}",
+                    "total_dispatches": total,
+                    "delivered": delivered,
+                    "returned": driver["returned"],
+                    "in_transit": driver["in_transit"],
+                    "issues": driver["issues"],
+                    "success_rate": success_rate,
+                }
+            )
+
+        return Response(results)
+
+    @action(detail=False, methods=["get"], url_path="driver-performance-details")
+    def driver_performance_details(self, request):
+
+        driver_id = request.query_params.get("driver_id")
+        start_date = parse_date(request.query_params.get("start_date"))
+        end_date = parse_date(request.query_params.get("end_date"))
+
+        start_dt = timezone.make_aware(
+            datetime.combine(start_date, datetime.min.time())
+        )
+
+        end_dt = timezone.make_aware(datetime.combine(end_date, datetime.max.time()))
+
+        if not driver_id:
+            return Response(
+                {"detail": "driver_id is required"},
+                status=400,
+            )
+        qs = (
+            Dispatch.objects.filter(
+                agent_id=driver_id,
+                assigned_at__range=[start_dt, end_dt],
+            )
+            .select_related(
+                "order_item",
+                "vehicle",
+                "agent",
+            )
+            .order_by("-assigned_at")
+        )
+
+        data = []
+
+        for dispatch in qs:
+
+            item = dispatch.order_item
+
+            data.append(
+                {
+                    "id": dispatch.id,
+                    "batch_no": dispatch.batch_no,
+                    "barcode": item.barcode,
+                    "sender_name": item.sender_name,
+                    "receiver_name": item.receiver_name,
+                    "receiver_phone": item.receiver_phone,
+                    "delivery_fee": float(item.delivery_fee or 0),
+                    "status": dispatch.status,
+                    "assigned_at": dispatch.assigned_at,
+                    "delivered_at": dispatch.delivered_at,
+                    "vehicle": (dispatch.vehicle.vehicleNo if dispatch.vehicle else ""),
+                }
+            )
+
+        return Response(data)
+
+    @action(detail=False, methods=["get"], url_path="vehicle-performance")
+    def vehicle_performance(self, request):
+
+        start_date = parse_date(request.query_params.get("start_date"))
+        end_date = parse_date(request.query_params.get("end_date"))
+
+        if not start_date or not end_date:
+            return Response(
+                {"detail": "start_date and end_date are required"},
+                status=400,
+            )
+
+        start_dt = timezone.make_aware(
+            datetime.combine(start_date, datetime.min.time())
+        )
+
+        end_dt = timezone.make_aware(datetime.combine(end_date, datetime.max.time()))
+
+        vehicles = (
+            Dispatch.objects.filter(
+                assigned_at__range=[start_dt, end_dt], vehicle__isnull=False
+            )
+            .values(
+                "vehicle__id",
+                "vehicle__vehicleNo",
+                "vehicle__owner_type",
+                "vehicle__logistics_partner__name",
+            )
+            .annotate(
+                total_dispatches=Count("id"),
+                delivered=Count("id", filter=Q(status="DELIVERED")),
+                returned=Count("id", filter=Q(status="RETURNED")),
+                in_transit=Count(
+                    "id",
+                    filter=Q(
+                        status__in=[
+                            "IN_TRANSIT",
+                            "PICKED_UP",
+                            "IN_HUB_TRANSFER",
+                            "OUT_FOR_DELIVERY",
+                        ]
+                    ),
+                ),
+                issues=Count(
+                    "id", filter=Q(status__in=["ISSUE", "DAMAGED", "PARTIAL"])
+                ),
+            )
+            .order_by("-total_dispatches")
+        )
+
+        results = []
+
+        for v in vehicles:
+
+            total = v["total_dispatches"] or 0
+            delivered = v["delivered"] or 0
+
+            utilization_score = round((total / total) * 100, 2) if total else 0
+            success_rate = round((delivered / total * 100), 2) if total else 0
+
+            results.append(
+                {
+                    "vehicle_id": v["vehicle__id"],
+                    "vehicle_no": v["vehicle__vehicleNo"],
+                    "owner": v["vehicle__owner_type"],
+                    "partner": (
+                        v["vehicle__logistics_partner__name"]
+                        if v["vehicle__logistics_partner__name"]
+                        else ""
+                    ),
+                    "total_dispatches": total,
+                    "delivered": delivered,
+                    "returned": v["returned"],
+                    "in_transit": v["in_transit"],
+                    "issues": v["issues"],
+                    "success_rate": success_rate,
+                    "utilization_score": utilization_score,
+                }
+            )
+
+        return Response(results)
+
+    @action(detail=False, methods=["get"], url_path="vehicle-performance-details")
+    def vehicle_performance_details(self, request):
+
+        vehicle_id = request.query_params.get("vehicle_id")
+        start_date = parse_date(request.query_params.get("start_date"))
+        end_date = parse_date(request.query_params.get("end_date"))
+
+        if not vehicle_id:
+            return Response(
+                {"detail": "vehicle_id is required"},
+                status=400,
+            )
+
+        start_dt = timezone.make_aware(
+            datetime.combine(start_date, datetime.min.time())
+        )
+
+        end_dt = timezone.make_aware(datetime.combine(end_date, datetime.max.time()))
+
+        qs = (
+            Dispatch.objects.filter(
+                vehicle_id=vehicle_id,
+                assigned_at__range=[start_dt, end_dt],
+            )
+            .select_related(
+                "order_item",
+                "vehicle",
+                "agent",
+            )
+            .order_by("-assigned_at")
+        )
+
+        data = []
+
+        for d in qs:
+
+            item = d.order_item
+
+            data.append(
+                {
+                    "id": d.id,
+                    "batch_no": d.batch_no,
+                    "barcode": item.barcode,
+                    "sender_name": item.sender_name,
+                    "receiver_name": item.receiver_name,
+                    "receiver_phone": item.receiver_phone,
+                    "status": d.status,
+                    "assigned_at": d.assigned_at,
+                    "delivered_at": d.delivered_at,
+                    "driver": (
+                        f"{d.agent.first_name} {d.agent.last_name}" if d.agent else ""
+                    ),
+                    "vehicle": d.vehicle.vehicleNo if d.vehicle else "",
+                }
+            )
+
+        return Response(data)
