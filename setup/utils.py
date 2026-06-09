@@ -113,6 +113,7 @@ def log_activity(request, user, activity):
 from rest_framework import viewsets
 from decimal import Decimal
 import uuid
+from django.db.models.fields.files import FieldFile
 
 # If you use this elsewhere, make sure it's imported
 # from .models import Auditlog
@@ -128,13 +129,19 @@ class AuditedModelViewSet(viewsets.ModelViewSet):
     def get_model_label(self):
         return self.queryset.model.__name__
 
-    # 🔥 SAFE SERIALIZER (FIXES UUID + JSON ERRORS)
     def safe_json(self, value):
+
         if isinstance(value, uuid.UUID):
             return str(value)
 
         if isinstance(value, Decimal):
             return float(value)
+
+        if isinstance(value, FieldFile):
+            try:
+                return value.url
+            except Exception:
+                return str(value.name)
 
         if hasattr(value, "isoformat"):
             return value.isoformat()

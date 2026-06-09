@@ -5,12 +5,14 @@ from .views import (
     AllMyDispatchView,
     CreateOrderView,
     DispatchedOrderView,
+    DriverDocumentViewSet,
     MyDispatchView,
     ScanItemView,
     OverdueItemsView,
     UpdateAgentLocation,
     UpdateDeliveryStatus,
     UpdateDispatcherStatusView,
+    VehicleDocumentViewSet,
     VendorFetchView,
     OrderUploadPreviewView,
     WarehouseScanView,
@@ -50,6 +52,17 @@ router.register(r"hubs", HubViewSet, basename="hub")
 router.register(r"hubtxns", HubTransferViewSet, basename="hubtxn")
 router.register(r"hubstore", HubstoreViewSet, basename="hub-store")
 router.register(r"warehouse-scan", WarehouseScanViewSet)
+router.register(
+    r"vehicle-documents",
+    VehicleDocumentViewSet,
+    basename="vehicle-documents",
+)
+
+router.register(
+    r"driver-documents",
+    DriverDocumentViewSet,
+    basename="driver-documents",
+)
 
 
 urlpatterns = router.urls + [

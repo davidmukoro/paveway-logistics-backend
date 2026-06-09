@@ -2,7 +2,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 from datetime import timedelta
 
-
 import os
 
 load_dotenv()
@@ -56,10 +55,8 @@ CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
 
 # JWT settings for DRF
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(
-        minutes=60
-    ),  # 5 in standard, but 30 for better UX
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),  # 5 in standard, but 30 for better UX
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,
@@ -115,9 +112,6 @@ TEMPLATES = [
         },
     },
 ]
-
-WSGI_APPLICATION = "core.wsgi.application"
-
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases

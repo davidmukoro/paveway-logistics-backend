@@ -9,9 +9,11 @@ from .services.vendor_service import fetch_vendor_orders
 from django.db.models import Q
 from .models import (
     DispatchHistory,
+    DriverDocument,
     HubTransfer,
     Order,
     OrderItem,
+    VehicleDocument,
     WarehouseScan,
     LogisticsPartner,
     driverpickup,
@@ -23,8 +25,10 @@ from .models import (
 )
 from .serializers import (
     BulkDispatchSerializer,
+    DriverDocumentSerializer,
     OrderItemSerializer,
     OrderSerializer,
+    VehicleDocumentSerializer,
     WarehouseScanSerializer,
     HubSerializer,
     PartnerSerializer,
@@ -77,6 +81,7 @@ from .serializers import (
     PendingWarehouseScanReportSerializer,
     WarehouseHoldingReportSerializer,
 )
+from rest_framework.parsers import MultiPartParser, FormParser
 
 
 class WaybillHistory(APIView):
@@ -2091,3 +2096,27 @@ class PendingWarehouseScanReportView(APIView):
                 "data": serializer.data,
             }
         )
+
+
+class VehicleDocumentViewSet(AuditedModelViewSet):
+
+    queryset = VehicleDocument.objects.select_related("vehicle").all()
+    permission_classes = [IsAuthenticated]
+    serializer_class = VehicleDocumentSerializer
+
+    parser_classes = [MultiPartParser, FormParser]
+
+    def perform_create(self, serializer):
+        serializer.save(createdBy=self.request.user.fullName)
+
+
+class DriverDocumentViewSet(AuditedModelViewSet):
+
+    queryset = DriverDocument.objects.select_related("driver").all()
+    permission_classes = [IsAuthenticated]
+    serializer_class = DriverDocumentSerializer
+
+    parser_classes = [MultiPartParser, FormParser]
+
+    def perform_create(self, serializer):
+        serializer.save(createdBy=self.request.user.fullName)

@@ -154,6 +154,7 @@ class Access(models.Model):
     customer = models.BooleanField(default=False)
     reports = models.BooleanField(default=False)
     settings = models.BooleanField(default=False)
+    dispatcher = models.BooleanField(default=False)
 
     createdBy = models.CharField(max_length=100, null=True)
     createdAt = models.DateTimeField(auto_now_add=True)

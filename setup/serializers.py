@@ -191,6 +191,7 @@ class AccessSerializer(serializers.ModelSerializer):
             "customer",
             "reports",
             "settings",
+            "dispatcher",
         ]
 
 
@@ -210,6 +211,7 @@ class PermissionSerializer(serializers.ModelSerializer):
             "customer",
             "reports",
             "settings",
+            "dispatcher",
             "role",
         ]
 
@@ -252,6 +254,7 @@ class StaffSerializer(serializers.ModelSerializer):
             "customer",
             "reports",
             "settings",
+            "dispatcher",
             "hub_name",
             "hub_info",
             "monthly_pay",
@@ -330,6 +333,7 @@ class StaffSerializer(serializers.ModelSerializer):
             "customer": validated_data.pop("customer", False),
             "reports": validated_data.pop("reports", False),
             "settings": validated_data.pop("settings", False),
+            "dispatcher": validated_data.pop("dispatcher", False),
         }
 
         password = validated_data.pop("password")
@@ -360,6 +364,7 @@ class StaffSerializer(serializers.ModelSerializer):
             "customer": validated_data.pop("customer", None),
             "reports": validated_data.pop("reports", None),
             "settings": validated_data.pop("settings", None),
+            "dispatcher": validated_data.pop("dispatcher", None),
         }
 
         password = validated_data.pop("password", None)
@@ -450,6 +455,7 @@ class GetStaffList(serializers.ModelSerializer):
             "customer": access.customer,
             "reports": access.reports,
             "settings": access.settings,
+            "dispatcher": access.dispatcher,
         }
 
 
@@ -462,6 +468,7 @@ class BackendUserSerializer(serializers.ModelSerializer):
     customer = serializers.BooleanField(required=False)
     reports = serializers.BooleanField(required=False)
     settings = serializers.BooleanField(required=False)
+    dispatcher = serializers.BooleanField(required=False)
 
     email = serializers.EmailField(
         validators=[
@@ -506,6 +513,7 @@ class BackendUserSerializer(serializers.ModelSerializer):
             "customer",
             "reports",
             "settings",
+            "dispatcher",
         ]
 
         extra_kwargs = {"password": {"write_only": True, "required": False}}
@@ -520,6 +528,7 @@ class BackendUserSerializer(serializers.ModelSerializer):
             "customer": validated_data.pop("customer", False),
             "reports": validated_data.pop("reports", False),
             "settings": validated_data.pop("settings", False),
+            "dispatcher": validated_data.pop("dispatcher", False),
         }
 
         password = validated_data.pop("password")
@@ -556,6 +565,7 @@ class BackendUserSerializer(serializers.ModelSerializer):
             "customer": validated_data.pop("customer", None),
             "reports": validated_data.pop("reports", None),
             "settings": validated_data.pop("settings", None),
+            "dispatcher": validated_data.pop("dispatcher", None),
         }
 
         password = validated_data.pop("password", None)

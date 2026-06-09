@@ -167,6 +167,7 @@ class UpdatePermissionView(APIView):
             "customer",
             "reports",
             "settings",
+            "dispatcher",
         ]:
             return Response({"error": "Invalid permission"}, status=400)
 

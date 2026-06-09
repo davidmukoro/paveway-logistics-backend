@@ -170,7 +170,7 @@ class Vehicle(models.Model):
     vehicleModel = models.CharField(max_length=100)
     vehicleYear = models.IntegerField(null=True, blank=True)
     vehicleWeight = models.IntegerField(null=True, blank=True)
-    papersExpiryDate = models.DateField(null=True, blank=True)
+    # papersExpiryDate = models.DateField(null=True, blank=True)
 
     # ✅ NEW: Ownership
     OWNER_TYPE_CHOICES = [
@@ -223,10 +223,6 @@ class Vehicle(models.Model):
     def __str__(self):
         owner = self.logistics_partner.name if self.logistics_partner else "Company"
         return f"{self.vehicleTag} - {self.vehicleNo} ({owner})"
-
-
-from django.core.exceptions import ValidationError
-from django.utils import timezone
 
 
 class DispatchStatus:
@@ -490,3 +486,89 @@ class OrderItemTracking(models.Model):
 
     class Meta:
         ordering = ["updated_at"]
+
+
+class VehicleDocument(models.Model):
+
+    DOCUMENT_TYPES = (
+        ("INSURANCE", "Insurance"),
+        ("ROAD_WORTHINESS", "Road Worthiness"),
+        ("VEHICLE_LICENSE", "Vehicle License"),
+        ("HACKNEY_PERMIT", "Hackney Permit"),
+    )
+
+    vehicle = models.ForeignKey(
+        Vehicle,
+        on_delete=models.CASCADE,
+    )
+
+    document_type = models.CharField(
+        max_length=50,
+        choices=DOCUMENT_TYPES,
+    )
+
+    document_number = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+    )
+    issue_date = models.DateField(
+        null=True,
+        blank=True,
+    )
+
+    expiry_date = models.DateField()
+
+    attachment = models.FileField(
+        upload_to="vehicle_documents/",
+        null=True,
+        blank=True,
+    )
+    createdBy = models.CharField(max_length=100, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.vehicle.vehicleNo} - {self.document_type}"
+
+
+class DriverDocument(models.Model):
+    DOCUMENT_TYPES = (
+        ("DRIVERS_LICENSE", "Driver License"),
+        ("MEDICAL", "Medical Certificate"),
+        ("TRAINING", "Training Certificate"),
+    )
+
+    driver = models.ForeignKey(
+        "setup.User",
+        on_delete=models.CASCADE,
+        related_name="documents",
+    )
+
+    document_type = models.CharField(
+        max_length=50,
+        choices=DOCUMENT_TYPES,
+    )
+
+    document_number = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+    )
+
+    issue_date = models.DateField(
+        null=True,
+        blank=True,
+    )
+
+    expiry_date = models.DateField()
+
+    attachment = models.FileField(
+        upload_to="driver_documents/",
+        null=True,
+        blank=True,
+    )
+    createdBy = models.CharField(max_length=100, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.driver.get_full_name()} - {self.document_type}"

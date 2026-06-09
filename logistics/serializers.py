@@ -4,8 +4,10 @@ from rest_framework import serializers
 from setup.utils import generate_staffNo
 from .utils import create_tracking, generate_waybill_no, geocode_address
 from .models import (
+    DriverDocument,
     Order,
     OrderItem,
+    VehicleDocument,
     WarehouseScan,
     Vehicle,
     Dispatch,
@@ -873,3 +875,116 @@ class PendingWarehouseScanReportSerializer(serializers.ModelSerializer):
             parts.append(f"{minutes} min{'s' if minutes > 1 else ''}")
 
         return " ".join(parts) if parts else "Just now"
+
+
+from rest_framework import serializers
+from datetime import date
+from .models import VehicleDocument
+
+
+class VehicleDocumentSerializer(serializers.ModelSerializer):
+    vehicle_no = serializers.CharField(source="vehicle.vehicleNo", read_only=True)
+    days_left = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VehicleDocument
+        fields = [
+            "id",
+            "vehicle",
+            "vehicle_no",
+            "document_type",
+            "issue_date",
+            "document_number",
+            "expiry_date",
+            "attachment",
+            "days_left",
+            "status",
+        ]
+
+    def get_days_left(self, obj):
+        if not obj.expiry_date:
+            return None
+
+        return (obj.expiry_date - date.today()).days
+
+    def get_status(self, obj):
+        if not obj.expiry_date:
+            return "UNKNOWN"
+
+        days = (obj.expiry_date - date.today()).days
+
+        if days < 0:
+            return "EXPIRED"
+        elif days <= 60:
+            return "EXPIRING"
+        return "VALID"
+
+    def update(self, instance, validated_data):
+
+        attachment = validated_data.pop("attachment", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        if attachment:
+            instance.attachment = attachment
+
+        instance.save()
+
+        return instance
+
+
+class DriverDocumentSerializer(serializers.ModelSerializer):
+    driver_name = serializers.CharField(source="driver.get_full_name", read_only=True)
+    staff_no = serializers.CharField(source="driver.staffNo", read_only=True)
+
+    days_left = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DriverDocument
+        fields = [
+            "id",
+            "driver",
+            "driver_name",
+            "staff_no",
+            "document_type",
+            "document_number",
+            "issue_date",
+            "expiry_date",
+            "attachment",
+            "days_left",
+            "status",
+        ]
+
+    def get_days_left(self, obj):
+        if not obj.expiry_date:
+            return None
+        return (obj.expiry_date - date.today()).days
+
+    def get_status(self, obj):
+        if not obj.expiry_date:
+            return "UNKNOWN"
+
+        days = (obj.expiry_date - date.today()).days
+
+        if days < 0:
+            return "EXPIRED"
+        elif days <= 60:
+            return "EXPIRING"
+        return "VALID"
+
+    def update(self, instance, validated_data):
+
+        attachment = validated_data.pop("attachment", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        if attachment:
+            instance.attachment = attachment
+
+        instance.save()
+
+        return instance
