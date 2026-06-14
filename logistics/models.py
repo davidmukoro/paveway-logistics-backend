@@ -52,6 +52,7 @@ class OrderItem(models.Model):
         ("OUT_FOR_DELIVERY", "Out for Delivery"),
         ("INWARD_RETURNED", "Inward Returned"),
         ("OUTWARD_RETURNED", "Outward Returned"),
+        ("DELIVERED", "Delivered"),
     ]
 
     flag = models.CharField(
