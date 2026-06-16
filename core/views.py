@@ -16,7 +16,7 @@ from datetime import datetime, date
 from django.utils.dateparse import parse_date
 from crm.models import Ticket
 from django.db.models.functions import Now
-from logistics.models import OrderItem, WarehouseScan
+from logistics.models import OrderItem, WarehouseScan, Dispatch
 from django.db.models.functions import TruncDay, TruncWeek, TruncMonth
 from django.db.models.functions import (
     ExtractYear,
@@ -26,6 +26,8 @@ from django.db.models.functions import (
 )
 from django.db.models.expressions import RawSQL
 import calendar
+from django.db.models.functions import Coalesce
+from django.db.models import Value, DecimalField
 
 
 class DashboardViewSet(AuditedModelViewSet):
@@ -381,22 +383,38 @@ class DashboardViewSet(AuditedModelViewSet):
             flag="DELIVERED",
         ).count()
 
-        overdue_items = 0
-        overdue_48hrs = 0
+        # overdue_items = 0
+        # overdue_48hrs = 0
 
         scans = WarehouseScan.objects.select_related("item").filter(
             time_out__isnull=True
         )
+
+        # for scan in scans:
+
+        #     overdue_time = scan.time_in + timedelta(hours=scan.item.holding_period)
+
+        #     if now > overdue_time:
+        #         overdue_items += 1
+
+        #     if now > scan.time_in + timedelta(hours=48):
+        #         overdue_48hrs += 1
+        overdue_items = 0
+
+        max_overdue_hours = 0
 
         for scan in scans:
 
             overdue_time = scan.time_in + timedelta(hours=scan.item.holding_period)
 
             if now > overdue_time:
+
                 overdue_items += 1
 
-            if now > scan.time_in + timedelta(hours=48):
-                overdue_48hrs += 1
+                extra_hours = round((now - overdue_time).total_seconds() / 3600)
+
+                if extra_hours > max_overdue_hours:
+                    max_overdue_hours = extra_hours
 
         return Response(
             {
@@ -415,124 +433,11 @@ class DashboardViewSet(AuditedModelViewSet):
                     },
                     "total_overdue_items": {
                         "value": overdue_items,
-                        "hint": f"{overdue_48hrs:,} overdue above 48 hrs",
+                        "hint": f"Longest overdue by {max_overdue_hours} hrs",
                     },
                 }
             }
         )
-
-    # @action(detail=False, methods=["get"], url_path="dashboard_charts")
-    # def dashboard_charts(self, request):
-
-    #     range_type = request.query_params.get("range", "12M")
-    #     now = timezone.now()
-
-    #     revenue_series = []
-    #     sales_series = []
-
-    #     qs = OrderItem.objects.filter(scanned_at__isnull=False)
-
-    #     # -------------------------
-    #     # 30D
-    #     # -------------------------
-    #     if range_type == "30D":
-
-    #         qs = qs.filter(scanned_at__gte=now - timedelta(days=30))
-
-    #         data = (
-    #             qs.annotate(period=RawSQL("DATE(scanned_at)", []))
-    #             .values("period")
-    #             .annotate(
-    #                 revenue=Sum("delivery_fee"),
-    #                 orders=Count("id"),
-    #                 delivered=Count("id", filter=Q(flag="DELIVERED")),
-    #             )
-    #             .order_by("period")
-    #         )
-
-    #     # -------------------------
-    #     # 90D
-    #     # -------------------------
-    #     elif range_type == "90D":
-
-    #         qs = qs.filter(scanned_at__gte=now - timedelta(days=90))
-
-    #         data = (
-    #             qs.annotate(
-    #                 year=RawSQL("YEAR(scanned_at)", []),
-    #                 week=RawSQL("WEEK(scanned_at)", []),
-    #             )
-    #             .values("year", "week")
-    #             .annotate(
-    #                 revenue=Sum("delivery_fee"),
-    #                 orders=Count("id"),
-    #                 delivered=Count("id", filter=Q(flag="DELIVERED")),
-    #             )
-    #             .order_by("year", "week")
-    #         )
-
-    #     # -------------------------
-    #     # 12M
-    #     # -------------------------
-    #     else:
-
-    #         qs = qs.filter(scanned_at__gte=now - timedelta(days=365))
-
-    #         data = (
-    #             qs.annotate(
-    #                 year=RawSQL("YEAR(scanned_at)", []),
-    #                 month=RawSQL("MONTH(scanned_at)", []),
-    #             )
-    #             .values("year", "month")
-    #             .annotate(
-    #                 revenue=Sum("delivery_fee"),
-    #                 orders=Count("id"),
-    #                 delivered=Count("id", filter=Q(flag="DELIVERED")),
-    #             )
-    #             .order_by("year", "month")
-    #         )
-
-    #     # -------------------------
-    #     # FORMAT RESPONSE
-    #     # -------------------------
-    #     for row in data:
-
-    #         revenue = float(row["revenue"] or 0)
-    #         orders = row["orders"] or 0
-    #         delivered = row["delivered"] or 0
-
-    #         if range_type == "30D":
-    #             period = str(row["period"])
-
-    #         elif range_type == "90D":
-    #             period = f"W{row['week']}"
-
-    #         else:
-    #             period = f"{row['month']}/{row['year']}"
-
-    #         revenue_series.append(
-    #             {
-    #                 "period": period,
-    #                 "revenue": revenue,
-    #             }
-    #         )
-
-    #         sales_series.append(
-    #             {
-    #                 "period": period,
-    #                 "orders": orders,
-    #                 "delivered": delivered,
-    #             }
-    #         )
-
-    #     return Response(
-    #         {
-    #             "range": range_type,
-    #             "revenueSeries": revenue_series,
-    #             "salesTrend": sales_series,
-    #             "revenueTotal": sum(x["revenue"] for x in revenue_series),
-    #         }
-    #     )
 
     @action(detail=False, methods=["get"], url_path="dashboard_charts")
     def dashboard_charts(self, request):
@@ -692,5 +597,285 @@ class DashboardViewSet(AuditedModelViewSet):
                 "revenueSeries": revenue_series[::-1],
                 "salesTrend": sales_series[::-1],
                 "revenueTotal": sum(x["revenue"] for x in revenue_series),
+            }
+        )
+
+    @action(detail=False, methods=["get"], url_path="dashboard_top_metrics")
+    def rankings(self, request):
+
+        # ====================================
+        # TOP DISPATCHERS
+        # ====================================
+
+        dispatchers = (
+            Dispatch.objects.values(
+                "agent",
+                "agent__fullName",
+                "agent__hub_name__hubName",
+            )
+            .annotate(
+                total_drops=Count("id"),
+                delivered=Count("id", filter=Q(status="DELIVERED")),
+            )
+            .order_by("-total_drops")[:5]
+        )
+
+        top_dispatchers = []
+
+        for dispatcher in dispatchers:
+
+            total = dispatcher["total_drops"]
+            delivered = dispatcher["delivered"]
+
+            completion = 0
+
+            if total:
+                completion = round((delivered / total) * 100)
+
+            top_dispatchers.append(
+                {
+                    "name": dispatcher["agent__fullName"],
+                    "subtitle": (
+                        f'{dispatcher["agent__hub_name__hubName"] or "No Hub"} '
+                        f"• {completion}% completed"
+                    ),
+                    "value": total,
+                    "progress": completion,
+                }
+            )
+
+        # ====================================
+        # TOP CUSTOMERS
+        # ====================================
+
+        customers = list(
+            OrderItem.objects.values(
+                "order__vendor",
+                "order__vendor__fullName",
+            )
+            .annotate(
+                shipments=Count("id"),
+                total_amount=Coalesce(
+                    Sum("delivery_fee"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
+            )
+            .order_by("-total_amount")[:5]
+        )
+
+        max_amount = 1
+
+        if customers:
+            max_amount = customers[0]["total_amount"] or 1
+
+        top_customers = []
+
+        for customer in customers:
+
+            progress = round(
+                (float(customer["total_amount"]) / float(max_amount)) * 100
+            )
+
+            top_customers.append(
+                {
+                    "name": customer["order__vendor__fullName"],
+                    "subtitle": (f'{customer["shipments"]:,} shipments'),
+                    "value": customer["total_amount"],
+                    "progress": progress,
+                }
+            )
+
+        # ====================================
+        # TOP HUBS
+        # ====================================
+
+        hubs = list(
+            Dispatch.objects.values(
+                "agent__hub_name",
+                "agent__hub_name__hubName",
+            )
+            .annotate(
+                total=Count("id"), delivered=Count("id", filter=Q(status="DELIVERED"))
+            )
+            .order_by("-total")[:5]
+        )
+
+        max_total = 1
+
+        if hubs:
+            max_total = hubs[0]["total"] or 1
+
+        top_hubs = []
+
+        for hub in hubs:
+
+            total = hub["total"]
+
+            delivered = hub["delivered"]
+
+            speed = 0
+
+            if total:
+                speed = round((delivered / total) * 100)
+
+            top_hubs.append(
+                {
+                    "name": hub["agent__hub_name__hubName"],
+                    "subtitle": (f"{total:,} handled • {speed}% delivered"),
+                    "value": total,
+                    "progress": speed,
+                }
+            )
+
+        return Response(
+            {
+                "top_dispatchers": top_dispatchers,
+                "top_customers": top_customers,
+                "top_hubs": top_hubs,
+            }
+        )
+
+    @action(detail=False, methods=["get"], url_path="dashboard_exception_metrics")
+    def dashboard_operations(self, request):
+
+        # ======================================================
+        # DRIVER EXCEPTIONS (from Dispatch issues/statuses)
+        # ======================================================
+
+        exceptions = (
+            Dispatch.objects.filter(
+                status__in=["DAMAGED", "PARTIAL", "RETURNED", "ISSUE"]
+            )
+            .values("agent__fullName", "status", "issue_reason")
+            .annotate(occurrences=Count("id"))
+            .order_by("-occurrences")[:5]
+        )
+
+        driver_exceptions = []
+
+        for item in exceptions:
+
+            count = item["occurrences"]
+
+            severity = "High" if count >= 10 else "Medium" if count >= 5 else "Low"
+
+            driver_exceptions.append(
+                {
+                    "driver": item["agent__fullName"],
+                    "route": item["status"],
+                    "reason": item["issue_reason"] or "No reason provided",
+                    "count": count,
+                    "severity": severity,
+                }
+            )
+
+        # ======================================================
+        # FLEET UTILIZATION (BASED ON VEHICLE MODEL - BEST APPROACH)
+        # ======================================================
+
+        vehicles = (
+            Dispatch.objects.values(
+                "vehicle__id",
+                "vehicle__vehicleTag",
+                "vehicle__vehicleNo",
+            )
+            .annotate(
+                total_dispatches=Count("id"),
+                active_dispatches=Count(
+                    "id", filter=Q(status__in=["ASSIGNED", "PICKED_UP"])
+                ),
+                completed=Count("id", filter=Q(status="DELIVERED")),
+            )
+            .order_by("-total_dispatches")[:5]
+        )
+        fleet_utilization = []
+
+        for v in vehicles:
+
+            total = v["total_dispatches"]
+
+            active = v["active_dispatches"]
+
+            utilization = 0
+
+            if total:
+                utilization = round((active / total) * 100)
+            vehicle_no = v.get("vehicle__vehicleNo") or ""
+            vehicle_tag = v.get("vehicle__vehicleTag") or ""
+
+            display_name = vehicle_no
+
+            if vehicle_tag:
+                display_name = f"{vehicle_no} ({vehicle_tag})"
+
+            fleet_utilization.append(
+                {
+                    "hub": display_name,
+                    "active": active,
+                    "available": total - active,
+                    "maintenance": 0,
+                    "utilization": utilization,
+                }
+            )
+
+        # ======================================================
+        # OVERDUE ITEMS (OrderItem + Dispatch timing)
+        # ======================================================
+
+        overdue_queryset = (
+            OrderItem.objects.filter(
+                dispatch__status__in=["ASSIGNED", "PICKED_UP"],
+                dispatch__delivered_at__isnull=True,
+            )
+            .select_related("order", "order__vendor", "dispatch")
+            .order_by("dispatch__assigned_at")[:5]
+        )
+        overdue_items = []
+
+        now = timezone.now()
+
+        total_overdue = (
+            OrderItem.objects.filter(
+                dispatch__status__in=["ASSIGNED", "PICKED_UP"],
+                dispatch__delivered_at__isnull=True,
+            )
+            .select_related("order", "order__vendor", "dispatch")
+            .order_by("dispatch__assigned_at")
+        ).count()
+
+        for item in overdue_queryset:
+
+            # fallback safety
+            # created = getattr(item, "scanned_at", None)
+            created = item.dispatch.assigned_at
+            if not created:
+                continue
+
+            hours = round((now - created).total_seconds() / 3600)
+
+            severity = (
+                "Critical" if hours >= 72 else "Warning" if hours >= 24 else "Normal"
+            )
+
+            overdue_items.append(
+                {
+                    "item": getattr(item, "barcode", str(item.id)),
+                    "owner": item.order.vendor.fullName,
+                    "overdueHours": hours,
+                    "severity": severity,
+                }
+            )
+
+        # ======================================================
+        # RESPONSE
+        # ======================================================
+
+        return Response(
+            {
+                "driver_exceptions": driver_exceptions,
+                "fleet_utilization": fleet_utilization,
+                "total_overdue": total_overdue,
+                "overdue_items": overdue_items,
             }
         )

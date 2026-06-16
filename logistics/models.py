@@ -234,6 +234,7 @@ class DispatchStatus:
     PARTIAL = "PARTIAL"
     RETURNED = "RETURNED"
     ISSUE = "ISSUE"
+    IN_HUB_TRANSFER = "IN_HUB_TRANSFER"
 
     CHOICES = [
         (ASSIGNED, "Assigned"),
@@ -243,6 +244,7 @@ class DispatchStatus:
         (PARTIAL, "Partial"),
         (RETURNED, "Returned"),
         (ISSUE, "Issue"),
+        (IN_HUB_TRANSFER, "IN_HUB_TRANSFER"),
     ]
 
 
