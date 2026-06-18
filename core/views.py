@@ -16,7 +16,7 @@ from datetime import datetime, date
 from django.utils.dateparse import parse_date
 from crm.models import Ticket
 from django.db.models.functions import Now
-from logistics.models import OrderItem, WarehouseScan, Dispatch
+from logistics.models import OrderItem, WarehouseScan, Dispatch, Order
 from django.db.models.functions import TruncDay, TruncWeek, TruncMonth
 from django.db.models.functions import (
     ExtractYear,
@@ -351,6 +351,8 @@ class DashboardViewSet(AuditedModelViewSet):
     @action(detail=False, methods=["get"], url_path="dashboard-card")
     def dashboard_summary(self, request):
 
+        role = request.user.userType
+
         now = timezone.now()
 
         month_start = now.replace(
@@ -361,49 +363,75 @@ class DashboardViewSet(AuditedModelViewSet):
             microsecond=0,
         )
 
-        total_shipments = OrderItem.objects.count()
+        # ======================================
+        # BASE QUERYSET
+        # ======================================
 
-        shipments_this_month = OrderItem.objects.filter(
-            scanned_at__gte=month_start
-        ).count()
+        orderitems = OrderItem.objects.all()
 
-        pending_shipments = OrderItem.objects.exclude(flag="DELIVERED").count()
+        warehouse_scans = WarehouseScan.objects.select_related("item").filter(
+            time_out__isnull=True
+        )
 
-        warehouse_items = OrderItem.objects.filter(flag="WAREHOUSE").count()
+        if role == "Customer":
+
+            orderitems = orderitems.filter(order__vendor=request.user)
+
+            warehouse_scans = warehouse_scans.filter(item__order__vendor=request.user)
+
+        # ======================================
+        # TOTAL SHIPMENTS
+        # ======================================
+
+        total_shipments = orderitems.count()
+
+        # ======================================
+        # THIS MONTH
+        # ======================================
+
+        shipments_this_month = orderitems.filter(scanned_at__gte=month_start).count()
+
+        # ======================================
+        # PENDING
+        # ======================================
+
+        pending_shipments = orderitems.exclude(flag="DELIVERED").count()
+
+        # ======================================
+        # WAREHOUSE
+        # ======================================
+
+        warehouse_items = orderitems.filter(flag="WAREHOUSE").count()
+
+        # ======================================
+        # MONTHLY REVENUE
+        # ======================================
 
         monthly_revenue = (
-            OrderItem.objects.filter(scanned_at__gte=month_start).aggregate(
+            orderitems.filter(scanned_at__gte=month_start).aggregate(
                 total=Sum("delivery_fee")
             )["total"]
             or 0
         )
 
-        delivered_this_month = OrderItem.objects.filter(
+        # ======================================
+        # DELIVERED THIS MONTH
+        # ======================================
+
+        delivered_this_month = orderitems.filter(
             scanned_at__gte=month_start,
             flag="DELIVERED",
         ).count()
 
-        # overdue_items = 0
-        # overdue_48hrs = 0
+        # ======================================
+        # OVERDUE ITEMS
+        # ======================================
 
-        scans = WarehouseScan.objects.select_related("item").filter(
-            time_out__isnull=True
-        )
-
-        # for scan in scans:
-
-        #     overdue_time = scan.time_in + timedelta(hours=scan.item.holding_period)
-
-        #     if now > overdue_time:
-        #         overdue_items += 1
-
-        #     if now > scan.time_in + timedelta(hours=48):
-        #         overdue_48hrs += 1
         overdue_items = 0
 
         max_overdue_hours = 0
 
-        for scan in scans:
+        for scan in warehouse_scans:
 
             overdue_time = scan.time_in + timedelta(hours=scan.item.holding_period)
 
@@ -414,6 +442,7 @@ class DashboardViewSet(AuditedModelViewSet):
                 extra_hours = round((now - overdue_time).total_seconds() / 3600)
 
                 if extra_hours > max_overdue_hours:
+
                     max_overdue_hours = extra_hours
 
         return Response(
@@ -879,3 +908,312 @@ class DashboardViewSet(AuditedModelViewSet):
                 "overdue_items": overdue_items,
             }
         )
+
+    @action(detail=False, methods=["get"], url_path="customer-shipment-trend")
+    def customer_shipment_trend(self, request):
+
+        from datetime import timedelta
+        from collections import defaultdict
+
+        range_type = request.query_params.get("range", "12M")
+
+        now = timezone.now()
+
+        queryset = OrderItem.objects.select_related("order")
+
+        if request.user.userType == "Customer":
+
+            queryset = queryset.filter(order__vendor_id=request.user.id)
+
+        # -------------------------
+        # 30 DAYS
+        # -------------------------
+
+        if range_type == "30D":
+
+            start_date = now - timedelta(days=30)
+
+            queryset = queryset.filter(scanned_at__gte=start_date)
+
+            daily = defaultdict(
+                lambda: {
+                    "orders": 0,
+                    "delivered": 0,
+                    "expense": 0,
+                }
+            )
+
+            for item in queryset:
+
+                key = item.scanned_at.strftime("%d %b")
+
+                daily[key]["orders"] += 1
+
+                if item.flag == "DELIVERED":
+                    daily[key]["delivered"] += 1
+
+                daily[key]["expense"] += float(item.delivery_fee or 0)
+
+            return Response(
+                [
+                    {
+                        "period": k,
+                        **v,
+                    }
+                    for k, v in daily.items()
+                ]
+            )
+
+        # -------------------------
+        # 90 DAYS
+        # -------------------------
+
+        elif range_type == "90D":
+
+            start_date = now - timedelta(days=90)
+
+            queryset = queryset.filter(scanned_at__gte=start_date)
+
+            monthly = defaultdict(
+                lambda: {
+                    "orders": 0,
+                    "delivered": 0,
+                    "expense": 0,
+                }
+            )
+
+            for item in queryset:
+
+                key = item.scanned_at.strftime("%b")
+
+                monthly[key]["orders"] += 1
+
+                if item.flag == "DELIVERED":
+
+                    monthly[key]["delivered"] += 1
+
+                monthly[key]["expense"] += float(item.delivery_fee or 0)
+
+            return Response(
+                [
+                    {
+                        "period": k,
+                        **v,
+                    }
+                    for k, v in monthly.items()
+                ]
+            )
+
+        # -------------------------
+        # 12 MONTHS
+        # -------------------------
+
+        else:
+
+            start_date = now - timedelta(days=365)
+
+            queryset = queryset.filter(scanned_at__gte=start_date)
+
+            monthly = defaultdict(
+                lambda: {
+                    "orders": 0,
+                    "delivered": 0,
+                    "expense": 0,
+                }
+            )
+
+            for item in queryset:
+
+                key = item.scanned_at.strftime("%b")
+
+                monthly[key]["orders"] += 1
+
+                if item.flag == "DELIVERED":
+
+                    monthly[key]["delivered"] += 1
+
+                monthly[key]["expense"] += float(item.delivery_fee or 0)
+
+            ordered_months = [
+                "Jan",
+                "Feb",
+                "Mar",
+                "Apr",
+                "May",
+                "Jun",
+                "Jul",
+                "Aug",
+                "Sep",
+                "Oct",
+                "Nov",
+                "Dec",
+            ]
+
+            result = []
+
+            for month in ordered_months:
+
+                result.append(
+                    {
+                        "period": month,
+                        **monthly[month],
+                    }
+                )
+
+            return Response(result)
+
+    @action(detail=False, methods=["get"], url_path="customer-status-mix")
+    def customer_status_mix(self, request):
+
+        queryset = OrderItem.objects.all()
+
+        # -----------------------------
+        # CUSTOMER FILTER
+        # -----------------------------
+        if request.user.userType == "Customer":
+            queryset = queryset.filter(order__vendor_id=request.user.id)
+
+        # -----------------------------
+        # GROUP STATUS FROM DB
+        # -----------------------------
+        status_counts = queryset.values("flag").annotate(total=Count("id"))
+
+        # -----------------------------
+        # MAP DB STATUS → UI STATUS
+        # -----------------------------
+        status_map = {
+            "DELIVERED": "Delivered",
+            "IN_TRANSIT": "In Transit",
+            "SCANNED_IN": "Pending Pickup",
+            "WAREHOUSE": "Pending Pickup",
+            "OUT_FOR_DELIVERY": "In Transit",
+            "PENDING": "Pending Pickup",
+            "INWARD_RETURNED": "Cancelled",
+            "OUTWARD_RETURNED": "Cancelled",
+        }
+
+        result_dict = {}
+
+        # initialize all expected buckets
+        for label in [
+            "Delivered",
+            "In Transit",
+            "Pending Pickup",
+            "Delayed",
+            "Cancelled",
+        ]:
+            result_dict[label] = 0
+
+        # -----------------------------
+        # BUILD RESULT
+        # -----------------------------
+        for row in status_counts:
+
+            raw_status = row["flag"]
+            count = row["total"]
+
+            label = status_map.get(raw_status, "Delayed")
+
+            result_dict[label] += count
+
+        # -----------------------------
+        # FORMAT RESPONSE
+        # -----------------------------
+        result = [{"name": k, "value": v} for k, v in result_dict.items()]
+
+        return Response(result)
+
+    from collections import defaultdict
+
+    @action(detail=False, methods=["get"], url_path="shipment-aging")
+    def shipment_aging(self, request):
+
+        now = timezone.now()
+
+        queryset = OrderItem.objects.select_related("order", "dispatch")
+
+        # -----------------------------
+        # CUSTOMER FILTER
+        # -----------------------------
+        if request.user.userType == "Customer":
+            queryset = queryset.filter(order__vendor_id=request.user.id)
+
+        # -----------------------------
+        # BUCKETS
+        # -----------------------------
+        buckets = {
+            "0-24h": 0,
+            "24-48h": 0,
+            "48-72h": 0,
+            "72h+": 0,
+        }
+
+        total = 0
+
+        for item in queryset:
+
+            # prefer dispatch time if available, else fallback to scan time
+            start_time = None
+
+            if (
+                hasattr(item, "dispatch")
+                and item.dispatch
+                and item.dispatch.assigned_at
+            ):
+                start_time = item.dispatch.assigned_at
+            else:
+                start_time = item.scanned_at
+
+            if not start_time:
+                continue
+
+            hours = (now - start_time).total_seconds() / 3600
+
+            total += 1
+
+            if hours <= 24:
+                buckets["0-24h"] += 1
+            elif hours <= 48:
+                buckets["24-48h"] += 1
+            elif hours <= 72:
+                buckets["48-72h"] += 1
+            else:
+                buckets["72h+"] += 1
+
+        result = [{"name": k, "value": v} for k, v in buckets.items()]
+
+        return Response({"total": total, "data": result})
+
+    @action(detail=False, methods=["get"], url_path="top-destination-lga")
+    def top_destination_lga(self, request):
+
+        queryset = OrderItem.objects.select_related("lga", "order")
+
+        # -----------------------------
+        # CUSTOMER FILTER
+        # -----------------------------
+        if request.user.userType == "Customer":
+            queryset = queryset.filter(order__vendor_id=request.user.id)
+            total_all = queryset.count()
+
+        # -----------------------------
+        # GROUP BY LGA
+        # -----------------------------
+        top_lgas = (
+            queryset.values("lga__name")  # adjust if your field differs
+            .annotate(total=Count("id"))
+            .order_by("-total")[:5]
+        )
+
+        result = []
+
+        for row in top_lgas:
+            result.append(
+                {
+                    "name": row["lga__name"] or "Unknown",
+                    "value": row["total"],
+                    "percentage": round((row["total"] / total_all) * 100, 1),
+                }
+            )
+
+        return Response(result)
