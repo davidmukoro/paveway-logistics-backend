@@ -224,6 +224,7 @@ class StaffSerializer(serializers.ModelSerializer):
     customer = serializers.BooleanField(required=False)
     reports = serializers.BooleanField(required=False)
     settings = serializers.BooleanField(required=False)
+    dispatcher = serializers.BooleanField(required=False)
     partner_name = serializers.CharField(source="partner.name", read_only=True)
     hub_info = serializers.CharField(source="hub_name.hubName", read_only=True)
 

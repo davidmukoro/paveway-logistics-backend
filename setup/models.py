@@ -45,7 +45,7 @@ class User(AbstractUser):
     CUSTOMER = "Customer"
     STAFF = "Staff"
     MARKETER = "Marketer"
-    CUSTOMERSUPPORT = "CustomerSupport"
+    CustomerMgmt = "Customer"
     ACCOUNT = "Account"
     DISPATCHER = "Dispatcher"
     SUPERADMIN = "Superadmin"
@@ -63,6 +63,7 @@ class User(AbstractUser):
         (ACCOUNT, "Account"),
         (DISPATCHER, "Dispatcher"),
         (SUPERADMIN, "Superadmin"),
+        (CustomerMgmt, "Customer"),
     ]
     role = models.CharField(max_length=25, choices=ROLE_TYPE_CHOICES, default=CUSTOMER)
     createdBy = models.CharField(max_length=255, null=True, blank=True)

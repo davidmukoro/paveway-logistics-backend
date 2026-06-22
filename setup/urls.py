@@ -45,6 +45,7 @@ router.register(r"expense-categories", ExpenseCategoryViewSet)
 router.register(r"allowance-deductions", AllowanceDeductionViewSet)
 router.register(r"audit-logs", AuditLogViewSet, basename="audit-logs")
 router.register(r"pricing-template", PricingViewSet)
+router.register(r"staff", StaffView, basename="staff")
 # router.register(r'users', UserViewSet)
 # router.register(r'staff-profiles', StaffProfileViewSet)
 # router.register(r'departments', DepartmentViewSet)
@@ -53,7 +54,7 @@ router.register(r"pricing-template", PricingViewSet)
 urlpatterns = router.urls + [
     path("pay-gateway/", PayGateway.as_view(), name="payment-gateway"),
     path("register/", CreateUserView.as_view(), name="register"),
-    path("staff/", StaffView.as_view()),
+    # path("staff/", StaffView.as_view()),
     path("staff/<uuid:id>/", StaffDetailView.as_view()),
     path("registerStaff/", BackendUserView.as_view(), name="registerStaff"),
     path("registerStaff/<str:id>/", UpdateStaffView.as_view(), name="updateStaff"),

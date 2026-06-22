@@ -83,8 +83,8 @@ class CreateUserView(generics.CreateAPIView):
     # permission_classes =[IsAuthenticated] #They must login to access this
 
 
-class StaffView(generics.ListCreateAPIView):
-
+class StaffView(AuditedModelViewSet):
+    # ListCreateAPIView
     queryset = User.objects.filter(userType="Staff")
     serializer_class = StaffSerializer
     parser_classes = [MultiPartParser, FormParser]
@@ -749,6 +749,7 @@ def validate_token(request):
                     "username": user.username,
                     "email": user.email,
                     "role": user.role,
+                    "usertype": user.userType,
                     "fullName": user.fullName,
                     "staffNo": user.staffNo,
                     "passport": (
