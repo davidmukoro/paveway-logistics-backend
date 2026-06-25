@@ -634,6 +634,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 "id": user.id,
                 "fullName": user.fullName,
                 "role": user.role,
+                "usertype": user.userType,
                 "staffNo": user.staffNo,
                 "email": user.email,
                 "passport": passport_url,
