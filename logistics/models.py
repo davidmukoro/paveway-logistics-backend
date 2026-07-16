@@ -248,6 +248,38 @@ class DispatchStatus:
     ]
 
 
+class DispatchSession(models.Model):
+    STATUS = (
+        ("ACTIVE", "Active"),
+        ("PAUSED", "Paused"),
+        ("COMPLETED", "Completed"),
+    )
+
+    agent = models.ForeignKey(
+        "setup.User",
+        on_delete=models.CASCADE,
+        related_name="dispatch_sessions",
+    )
+
+    vehicle = models.ForeignKey(
+        "Vehicle",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+
+    started_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS,
+        default="ACTIVE",
+    )
+    start_latitude = models.FloatField(null=True, blank=True)
+    start_longitude = models.FloatField(null=True, blank=True)
+
+
 class Dispatch(models.Model):
     order_item = models.OneToOneField(
         OrderItem, on_delete=models.CASCADE, related_name="dispatch"
@@ -256,16 +288,13 @@ class Dispatch(models.Model):
     agent = models.ForeignKey(
         "setup.User", on_delete=models.CASCADE, limit_choices_to={"role": "Dispatcher"}
     )
-
     vehicle = models.ForeignKey(
         Vehicle, on_delete=models.SET_NULL, null=True, blank=True
     )
-
     # 🔹 STATUS
     status = models.CharField(
         max_length=20, choices=DispatchStatus.CHOICES, default=DispatchStatus.ASSIGNED
     )
-
     # 🔹 ASSIGNMENT
     assigned_at = models.DateTimeField(auto_now_add=True)
     assigned_by = models.ForeignKey(
@@ -293,6 +322,14 @@ class Dispatch(models.Model):
 
     # 🔹 TRACK REASSIGNMENT
     reassigned_at = models.DateTimeField(null=True, blank=True)
+
+    session = models.ForeignKey(
+        DispatchSession,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="dispatches",
+    )
 
     def clean(self):
         if self.agent.role != "Dispatcher":
@@ -329,18 +366,177 @@ class DispatchHistory(models.Model):
     changed_by = models.ForeignKey("setup.User", on_delete=models.SET_NULL, null=True)
 
 
-class AgentLocation(models.Model):
-    agent = models.ForeignKey("setup.User", on_delete=models.CASCADE)
-    barcode = models.CharField(
-        max_length=100, null=True, blank=True
-    )  # optional link to delivery
+from django.conf import settings
+from django.db import models
+
+
+class AgentCurrentLocation(models.Model):
+    session = models.OneToOneField(
+        DispatchSession,
+        on_delete=models.CASCADE,
+        related_name="current_location",
+        null=True,
+        blank=True,
+    )
+    agent = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="current_location",
+    )
+
     latitude = models.FloatField()
     longitude = models.FloatField()
-    accuracy = models.FloatField(null=True, blank=True)  # GPS accuracy (important!)
-    timestamp = models.DateTimeField(auto_now_add=True)
+
+    accuracy = models.FloatField(null=True, blank=True)
+
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.agent} - {self.latitude},{self.longitude} @ {self.timestamp}"
+        return self.agent.fullName
+
+
+class AgentLocation(models.Model):
+    session = models.ForeignKey(
+        DispatchSession,
+        on_delete=models.CASCADE,
+        related_name="locations",
+        null=True,
+        blank=True,
+    )
+
+    latitude = models.FloatField()
+    longitude = models.FloatField()
+    accuracy = models.FloatField(null=True, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+
+class DispatchStop(models.Model):
+
+    session = models.ForeignKey(
+        DispatchSession, on_delete=models.CASCADE, related_name="stops"
+    )
+
+    customer_name = models.CharField(max_length=255)
+
+    address = models.TextField()
+
+    latitude = models.FloatField()
+
+    longitude = models.FloatField()
+
+    sequence = models.PositiveIntegerField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    dispatches = models.ManyToManyField(Dispatch, related_name="stops", blank=True)
+    completed = models.BooleanField(default=False)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["sequence"]
+        unique_together = (
+            "session",
+            "sequence",
+        )
+
+    def __str__(self):
+        return f"{self.customer_name} - Stop {self.sequence}"
+
+
+class DispatchRoutePoint(models.Model):
+
+    stop = models.ForeignKey(
+        DispatchStop,
+        related_name="route_points",
+        on_delete=models.CASCADE,
+    )
+
+    sequence = models.PositiveIntegerField()
+
+    latitude = models.FloatField()
+
+    longitude = models.FloatField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sequence"]
+
+        unique_together = (
+            "stop",
+            "sequence",
+        )
+
+    def __str__(self):
+        return f"Stop {self.stop_id} " f"- Point {self.sequence}"
+
+
+class RouteDeviation(models.Model):
+
+    session = models.ForeignKey(
+        DispatchSession,
+        on_delete=models.CASCADE,
+        related_name="deviations",
+    )
+
+    agent = models.ForeignKey(
+        "setup.User",
+        on_delete=models.CASCADE,
+        related_name="route_deviations",
+    )
+
+    # Actual GPS position when deviation happened
+    latitude = models.FloatField()
+    longitude = models.FloatField()
+
+    # Closest planned route point
+    planned_latitude = models.FloatField(
+        null=True,
+        blank=True,
+    )
+
+    planned_longitude = models.FloatField(
+        null=True,
+        blank=True,
+    )
+
+    # Distance away from planned route (meters)
+    deviation_distance = models.FloatField()
+
+    detected_at = models.DateTimeField(auto_now_add=True)
+
+    STATUS_CHOICES = [
+        ("OPEN", "Open"),
+        ("RESOLVED", "Resolved"),
+    ]
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="OPEN",
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-detected_at"]
+
+    def __str__(self):
+        return f"{self.agent.fullName} " f"- {self.deviation_distance}m"
+
+
+class AddressCache(models.Model):
+    address = models.CharField(max_length=255, unique=True)
+    latitude = models.FloatField()
+    longitude = models.FloatField()
+    # optional but useful
+    formatted_address = models.TextField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    hit_count = models.IntegerField(default=0)
+
+    def __str__(self):
+        return self.address
 
 
 class DeliveryAlert(models.Model):

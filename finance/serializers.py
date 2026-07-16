@@ -9,6 +9,8 @@ from hmcs.models import EmployeeDeduction, AllowanceDeduction, PayrollPeriod
 
 class WalletSerializer(serializers.ModelSerializer):
     customer = UserSerializer(read_only=True)  # Keep customer read-only
+    customer_name = serializers.CharField(source="customer.fullName", read_only=True)
+    customer_id = serializers.CharField(source="customer.id", read_only=True)
 
     class Meta:
         model = WalletFunding
@@ -22,6 +24,9 @@ class WalletSerializer(serializers.ModelSerializer):
             "narration",
             "postedBy",
             "postedAt",
+            "fundtype",
+            "customer_name",
+            "customer_id",
         ]
 
         extra_kwargs = {
@@ -29,6 +34,7 @@ class WalletSerializer(serializers.ModelSerializer):
             "postedAt": {"read_only": True},
             "narration": {"required": False},
             "customer": {"read_only": True},
+            "customer_name": {"read_only": True},
         }
 
     def create(self, validated_data):

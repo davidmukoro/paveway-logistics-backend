@@ -22,6 +22,8 @@ from .models import (
     HubTransferItem,
     HubScan,
     OrderItemTracking,
+    DispatchSession,
+    DispatchStop,
 )
 from .serializers import (
     BulkDispatchSerializer,
@@ -41,7 +43,9 @@ from .serializers import (
 )
 from django.utils import timezone
 from .utils import (
+    calculate_speed_mps,
     create_tracking,
+    distance_meters,
     generate_delivery_code,
     generate_waybill_no,
     normalize_vendor_payload,
@@ -82,6 +86,10 @@ from .serializers import (
     WarehouseHoldingReportSerializer,
 )
 from rest_framework.parsers import MultiPartParser, FormParser
+from .services.osrm_service import get_route
+from .models import DispatchRoutePoint, AgentCurrentLocation, RouteDeviation
+from .services.deviation_service import check_route_deviation
+from .services.stop_service import update_stop_completion, update_stop_completion
 
 
 class WaybillHistory(APIView):
@@ -1642,12 +1650,300 @@ class MyDispatchView(APIView):
         return Response(serializer.data, status=200)
 
 
+# class TodayRunView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request):
+
+#         now = timezone.now()
+
+#         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+#         end_of_day = start_of_day + timedelta(days=1)
+
+#         items = (
+#             Dispatch.objects.filter(
+#                 agent=request.user,
+#                 picked_up_at__gte=start_of_day,
+#                 picked_up_at__lt=end_of_day,
+#             )
+#             .select_related("order_item", "vehicle")
+#             .order_by("order_item__delivery_address")
+#         )
+
+#         serializer = DispatchSerializer(items, many=True)
+#         return Response(serializer.data, status=200)
+
+
+# class TodayRunView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     ACTIVE_STATUSES = [
+#         "PICKED_UP",
+#         "IN_TRANSIT",
+#         "OUT_FOR_DELIVERY",
+#         "ISSUE",
+#         "PART_DELIVERED",
+#     ]
+
+#     def get(self, request):
+
+#         dispatches = (
+#             Dispatch.objects.filter(
+#                 agent=request.user,
+#                 status__in=self.ACTIVE_STATUSES,
+#             )
+#             .select_related(
+#                 "order_item",
+#                 "vehicle",
+#             )
+#             .order_by(
+#                 "order_item__delivery_address",
+#                 "order_item__receiver_email",
+#                 "picked_up_at",
+#             )
+#         )
+
+#         serializer = DispatchSerializer(dispatches, many=True)
+#         data = serializer.data
+
+#         gps_points = list(
+#             AgentLocation.objects.filter(session__agent=request.user).order_by(
+#                 "-timestamp"
+#             )[:6]
+#         )
+
+#         gps_points.reverse()
+
+#         speed = calculate_speed_mps(gps_points)
+#         enriched_items = []
+#         stops = []
+#         for d, item in zip(dispatches, data):
+
+#             order_item = d.order_item
+
+#             if gps_points:
+#                 current_lat = gps_points[-1].latitude
+#                 current_lng = gps_points[-1].longitude
+#             else:
+#                 current_lat = current_lng = None
+
+#             if current_lat is None or not order_item.latitude or speed == 0:
+#                 item["distance_km"] = None
+#                 item["eta_minutes"] = None
+
+#             else:
+#                 distance = distance_meters(
+#                     current_lat,
+#                     current_lng,
+#                     order_item.latitude,
+#                     order_item.longitude,
+#                 )
+
+#                 item["distance_km"] = round(distance / 1000, 2)
+
+#                 eta_seconds = distance / speed
+#                 item["eta_minutes"] = max(1, round(eta_seconds / 60))
+
+#             stops.append(item)
+
+#             stops.sort(key=lambda x: x.get("distance_km") or 999999)
+#             for i, item in enumerate(stops):
+#                 item["is_next_stop"] = i == 0
+#             enriched_items.append(item)
+
+#         total = dispatches.count()
+#         delivered = Dispatch.objects.filter(
+#             agent=request.user, status="DELIVERED"
+#         ).count()
+
+#         pending = total - delivered
+
+#         return Response(
+#             {
+#                 "items": enriched_items,
+#                 "grouped": {
+#                     "total": total,
+#                     "delivered": delivered,
+#                     "pending": pending,
+#                 },
+#             }
+#         )
+
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+
+class TodayRunView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    ACTIVE_STATUSES = [
+        "PICKED_UP",
+        "IN_TRANSIT",
+        "OUT_FOR_DELIVERY",
+        "ISSUE",
+        "PART_DELIVERED",
+    ]
+
+    def get(self, request):
+
+        # =========================
+        # 1. ROUTE DATA (ACTIVE ONLY)
+        # =========================
+        dispatches = (
+            Dispatch.objects.filter(
+                agent=request.user,
+                status__in=self.ACTIVE_STATUSES,
+            )
+            .select_related("order_item", "vehicle")
+            .order_by(
+                "order_item__delivery_address",
+                "order_item__receiver_email",
+                "picked_up_at",
+            )
+        )
+
+        serializer = DispatchSerializer(dispatches, many=True)
+        data = serializer.data
+
+        # =========================
+        # 2. GPS DATA
+        # =========================
+        gps_points = list(
+            AgentLocation.objects.filter(session__agent=request.user).order_by(
+                "-timestamp"
+            )[:6]
+        )
+
+        gps_points.reverse()
+
+        speed = calculate_speed_mps(gps_points)
+
+        if gps_points:
+            current_lat = gps_points[-1].latitude
+            current_lng = gps_points[-1].longitude
+        else:
+            current_lat = None
+            current_lng = None
+
+        # =========================
+        # 3. ENRICH ITEMS
+        # =========================
+        stops = []
+
+        for d, item in zip(dispatches, data):
+
+            order_item = d.order_item
+
+            # distance + ETA
+            if current_lat is None or not order_item.latitude or speed == 0:
+                item["distance_km"] = None
+                item["eta_minutes"] = None
+            else:
+                distance = distance_meters(
+                    current_lat,
+                    current_lng,
+                    order_item.latitude,
+                    order_item.longitude,
+                )
+
+                item["distance_km"] = round(distance / 1000, 2)
+
+                eta_seconds = distance / speed
+                item["eta_minutes"] = max(1, round(eta_seconds / 60))
+
+            stops.append(item)
+
+        # =========================
+        # 4. ROUTE OPTIMIZATION
+        # =========================
+        stops.sort(key=lambda x: x.get("distance_km") or 999999)
+
+        for i, item in enumerate(stops):
+            item["is_next_stop"] = i == 0
+
+        enriched_items = stops
+
+        # =========================
+        # 5. STATS (CORRECT LOGIC)
+        # =========================
+        all_dispatches = Dispatch.objects.filter(agent=request.user)
+
+        total = all_dispatches.count()
+
+        delivered = all_dispatches.filter(status="DELIVERED").count()
+
+        pending = all_dispatches.exclude(status="DELIVERED").count()
+
+        # =========================
+        # 6. RESPONSE
+        # =========================
+        return Response(
+            {
+                "items": enriched_items,
+                "grouped": {
+                    "total": total,
+                    "delivered": delivered,
+                    "pending": pending,
+                },
+            }
+        )
+
+
+class RouteReplayView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, session_id):
+
+        session = (
+            DispatchSession.objects.filter(
+                id=session_id,
+            )
+            .select_related("agent", "vehicle")
+            .first()
+        )
+
+        if not session:
+            return Response({"error": "Session not found"}, status=404)
+
+        # 🔒 security check (non-staff users can only view own sessions)
+        if not request.user.is_staff and session.agent != request.user:
+            return Response({"error": "Unauthorized"}, status=403)
+
+        locations = AgentLocation.objects.filter(session=session).order_by("timestamp")
+
+        # optional: limit for performance (important for long sessions)
+        locations = locations[:2000]
+
+        route = [
+            {
+                "lat": loc.latitude,
+                "lng": loc.longitude,
+                "timestamp": loc.timestamp.isoformat(),
+            }
+            for loc in locations
+        ]
+
+        return Response(
+            {
+                "session_id": session.id,
+                "agent": session.agent.fullName,
+                "vehicle": session.vehicle.vehicleNo if session.vehicle else None,
+                "route": route,
+                "points": len(route),
+            }
+        )
+
+
 class AllMyDispatchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        items = Dispatch.objects.filter(agent=request.user).select_related(
-            "order_item", "vehicle"
+        items = (
+            Dispatch.objects.filter(agent=request.user)
+            .select_related("order_item", "vehicle")
+            .order_by("-picked_up_at")
         )
 
         serializer = DispatchSerializer(items, many=True)
@@ -1909,57 +2205,627 @@ def reassign_dispatch(dispatch, new_agent, new_vehicle, user):
     dispatch.save()
 
 
+from .models import AgentCurrentLocation
+import math
+
+
+def calculate_distance(lat1, lon1, lat2, lon2):
+    R = 6371  # km
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
+    )
+
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+
+class UpdateDispatchStatus(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+
+        dispatch_id = request.data.get("dispatch_id")
+        status = request.data.get("status")
+
+        allowed = [
+            "PICKED_UP",
+            "IN_TRANSIT",
+            "OUT_FOR_DELIVERY",
+            "DELIVERED",
+            "ISSUE",
+        ]
+
+        if status not in allowed:
+            return Response({"error": "Invalid status"}, status=400)
+
+        dispatch = Dispatch.objects.filter(id=dispatch_id, agent=request.user).first()
+
+        if not dispatch:
+            return Response({"error": "Dispatch not found"}, status=404)
+
+        dispatch.status = status
+
+        # timestamps
+        if status == "PICKED_UP":
+            dispatch.picked_up_at = timezone.now()
+
+        if status == "DELIVERED":
+            dispatch.delivered_at = timezone.now()
+
+        dispatch.save()
+
+        return Response({"message": "Status updated"})
+
+
+# class StartDispatchSession(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def post(self, request):
+
+#         # prevent duplicate active session
+#         session = DispatchSession.objects.filter(
+#             agent=request.user, status="ACTIVE"
+#         ).first()
+
+#         if session:
+#             return Response(
+#                 {"session_id": session.id, "message": "Session already active"}
+#             )
+
+#         # get latest vehicle assignment
+#         dispatch = (
+#             Dispatch.objects.filter(agent=request.user)
+#             .select_related("vehicle")
+#             .order_by("-assigned_at")
+#             .first()
+#         )
+
+#         # create session
+#         session = DispatchSession.objects.create(
+#             agent=request.user,
+#             vehicle=dispatch.vehicle if dispatch else None,
+#             status="ACTIVE",
+#         )
+
+#         # 🚚 GET TODAY'S ASSIGNED PARCELS
+#         parcels = Dispatch.objects.filter(
+#             agent=request.user,
+#             status__in=["PICKED_UP", "IN_TRANSIT", "OUT_FOR_DELIVERY"],
+#         ).select_related("order_item")
+
+#         # 🔥 AUTO TRANSITION TO IN_TRANSIT
+#         updated = parcels.update(status="IN_TRANSIT")
+
+
+#         return Response(
+#             {
+#                 "session_id": session.id,
+#                 "vehicle": (
+#                     dispatch.vehicle.vehicleNo
+#                     if dispatch and dispatch.vehicle
+#                     else None
+#                 ),
+#                 "parcels_activated": updated,
+#                 "message": "Dispatch started successfully",
+#             }
+#         )
+class StartDispatchSession(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+
+        # prevent duplicate active session
+        session = DispatchSession.objects.filter(
+            agent=request.user, status="ACTIVE"
+        ).first()
+
+        if session:
+            return Response(
+                {"session_id": session.id, "message": "Session already active"}
+            )
+
+        # get latest vehicle assignment
+        dispatch = (
+            Dispatch.objects.filter(agent=request.user)
+            .select_related("vehicle")
+            .order_by("-assigned_at")
+            .first()
+        )
+
+        # create session
+        session = DispatchSession.objects.create(
+            agent=request.user,
+            vehicle=dispatch.vehicle if dispatch else None,
+            status="ACTIVE",
+        )
+
+        # ==================================
+        # CREATE DELIVERY STOPS
+        # ==================================
+
+        parcels = Dispatch.objects.filter(
+            agent=request.user,
+            status__in=[
+                "PICKED_UP",
+                "IN_TRANSIT",
+                "OUT_FOR_DELIVERY",
+                "PARTIAL",
+                "ISSUE",
+                "RETURNED",
+            ],
+        ).select_related("order_item")
+
+        grouped_stops = defaultdict(list)
+
+        for parcel in parcels:
+
+            item = parcel.order_item
+
+            key = (
+                item.receiver_email,
+                item.delivery_address,
+            )
+
+            grouped_stops[key].append(item)
+
+        stops_created = 0
+
+        for index, ((email, address), items) in enumerate(
+            grouped_stops.items(), start=1
+        ):
+
+            first_item = items[0]
+
+            if not first_item.latitude or not first_item.longitude:
+                continue
+
+            stop = DispatchStop.objects.create(
+                session=session,
+                customer_name=first_item.receiver_name,
+                address=first_item.delivery_address,
+                latitude=first_item.latitude,
+                longitude=first_item.longitude,
+                sequence=index,
+            )
+
+            dispatch_items = Dispatch.objects.filter(order_item__in=items)
+
+            stop.dispatches.set(dispatch_items)
+            stops_created += 1
+
+        # ==================================
+        # GET DRIVER CURRENT LOCATION
+        # ==================================
+
+        current_location = AgentCurrentLocation.objects.filter(
+            agent=request.user
+        ).first()
+
+        if current_location is None:
+            return Response(
+                {"message": "Driver current location not found."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ==================================
+        # GENERATE PLANNED ROUTES
+        # ==================================
+
+        current_location = AgentCurrentLocation.objects.filter(
+            agent=request.user
+        ).first()
+
+        if current_location:
+
+            origin_lat = current_location.latitude
+            origin_lng = current_location.longitude
+
+            stops = session.stops.order_by("sequence")
+
+            for stop in stops:
+
+                route = get_route(
+                    origin_lat,
+                    origin_lng,
+                    stop.latitude,
+                    stop.longitude,
+                )
+                if not route:
+                    continue
+
+                route_points = []
+
+                for index, point in enumerate(route, start=1):
+
+                    route_points.append(
+                        DispatchRoutePoint(
+                            stop=stop,
+                            sequence=index,
+                            latitude=point["lat"],
+                            longitude=point["lng"],
+                        )
+                    )
+
+                DispatchRoutePoint.objects.bulk_create(route_points)
+
+                # Next stop starts where the previous stop ended
+                origin_lat = stop.latitude
+                origin_lng = stop.longitude
+
+        # ==================================
+        # MOVE PARCELS TO IN_TRANSIT
+        # ==================================
+
+        # updated = parcels.update(status="IN_TRANSIT")
+        updated = parcels.filter(
+            status__in=[
+                "PICKED_UP",
+            ]
+        ).update(status="IN_TRANSIT")
+        return Response(
+            {
+                "session_id": session.id,
+                "vehicle": (
+                    dispatch.vehicle.vehicleNo
+                    if dispatch and dispatch.vehicle
+                    else None
+                ),
+                "parcels_activated": updated,
+                "stops_created": stops_created,
+                "message": "Dispatch started successfully",
+            }
+        )
+
+
+class StopDispatchSession(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        session = DispatchSession.objects.filter(
+            agent=request.user, status="ACTIVE"
+        ).first()
+
+        if not session:
+            return Response({"message": "No active session"}, status=400)
+
+        session.status = "COMPLETED"
+        session.ended_at = timezone.now()
+        session.save()
+
+        return Response({"message": "Session ended"})
+
+
+class ActiveDispatchSession(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+
+        session = (
+            DispatchSession.objects.filter(
+                agent=request.user, status="ACTIVE", ended_at__isnull=True
+            )
+            .select_related("vehicle")
+            .order_by("-started_at")
+            .first()
+        )
+
+        if not session:
+            return Response({}, status=200)
+
+        return Response(
+            {
+                "id": session.id,
+                "status": session.status,
+                "started_at": session.started_at,
+                "vehicle": (
+                    {
+                        "id": session.vehicle.id if session.vehicle else None,
+                        "vehicleNo": (
+                            session.vehicle.vehicleNo if session.vehicle else None
+                        ),
+                    }
+                    if session.vehicle
+                    else None
+                ),
+            }
+        )
+
+
 class UpdateAgentLocation(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        lat = request.data.get("latitude")
-        lng = request.data.get("longitude")
-        barcode = request.data.get("barcode")
 
-        if not lat or not lng:
-            return Response({"error": "Latitude and Longitude required"}, status=400)
+        latitude = request.data.get("latitude")
+        longitude = request.data.get("longitude")
+        accuracy = request.data.get("accuracy")
 
-        AgentLocation.objects.create(
-            agent=request.user, latitude=lat, longitude=lng, barcode=barcode
+        if latitude is None or longitude is None:
+            return Response(
+                {"error": "Latitude and Longitude required"},
+                status=400,
+            )
+
+        current_lat = float(latitude)
+        current_lng = float(longitude)
+
+        # -------------------------------------------------------
+        # Get Active Session
+        # -------------------------------------------------------
+        session = (
+            DispatchSession.objects.filter(
+                agent=request.user,
+                status="ACTIVE",
+            )
+            .order_by("-started_at")
+            .first()
         )
 
-        return Response({"message": "Location updated"})
+        if not session:
+            return Response(
+                {"error": "No active dispatch session"},
+                status=400,
+            )
+
+        # -------------------------------------------------------
+        # Save session starting point (only once)
+        # -------------------------------------------------------
+        if session.start_latitude is None or session.start_longitude is None:
+            session.start_latitude = current_lat
+            session.start_longitude = current_lng
+            session.save(
+                update_fields=[
+                    "start_latitude",
+                    "start_longitude",
+                ]
+            )
+
+        # -------------------------------------------------------
+        # Update current location
+        # -------------------------------------------------------
+        AgentCurrentLocation.objects.update_or_create(
+            agent=request.user,
+            defaults={
+                "latitude": current_lat,
+                "longitude": current_lng,
+                "accuracy": accuracy,
+            },
+        )
+
+        # -------------------------------------------------------
+        # Save movement history
+        # -------------------------------------------------------
+        AgentLocation.objects.create(
+            session=session,
+            latitude=current_lat,
+            longitude=current_lng,
+            accuracy=accuracy,
+        )
+        # -------------------------------------------------------
+        # Route Deviation Detection
+        # -------------------------------------------------------
+
+        deviation = check_route_deviation(
+            session=session,
+            latitude=current_lat,
+            longitude=current_lng,
+        )
+
+        # -------------------------------------------------------
+        # Calculate distance travelled from session start
+        # (same value for every dispatch)
+        # -------------------------------------------------------
+        distance_from_start = distance_meters(
+            session.start_latitude,
+            session.start_longitude,
+            current_lat,
+            current_lng,
+        )
+
+        # -------------------------------------------------------
+        # Update dispatch statuses automatically
+        # -------------------------------------------------------
+        dispatches = Dispatch.objects.filter(
+            agent=request.user,
+            status__in=[
+                "PICKED_UP",
+                "IN_TRANSIT",
+            ],
+        ).select_related("order_item")
+
+        updated = 0
+
+        for dispatch in dispatches:
+
+            item = dispatch.order_item
+
+            if item.latitude is None or item.longitude is None:
+                continue
+
+            # Distance between dispatcher and customer
+            distance_to_customer = distance_meters(
+                current_lat,
+                current_lng,
+                item.latitude,
+                item.longitude,
+            )
+
+            # -----------------------------------------
+            # Left warehouse
+            # -----------------------------------------
+            if dispatch.status == "PICKED_UP" and distance_from_start >= 500:
+                dispatch.status = "IN_TRANSIT"
+                dispatch.save(update_fields=["status"])
+                updated += 1
+
+            # -----------------------------------------
+            # Arrived near customer
+            # -----------------------------------------
+            elif dispatch.status == "IN_TRANSIT" and distance_to_customer <= 300:
+                dispatch.status = "OUT_FOR_DELIVERY"
+                dispatch.save(update_fields=["status"])
+                updated += 1
+
+        return Response(
+            {
+                "message": "Location updated",
+                "dispatches_updated": updated,
+                "deviation_detected": (True if deviation else False),
+                "deviation_distance": (
+                    round(deviation.deviation_distance, 2) if deviation else None
+                ),
+            }
+        )
 
 
-class AgentMovementTrail(APIView):
+class RouteDeviationHistory(APIView):
+
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        try:
-            # Subquery to get the latest vehicle assigned to the agent
-            latest_dispatch_subquery = (
-                Dispatch.objects.filter(agent=OuterRef("agent_id"))
-                .order_by("-assigned_at")
-                .values("vehicle__vehicleNo")[:1]
-            )
 
-            # Fetch locations and annotate with vehicle
-            qs = (
-                AgentLocation.objects.select_related("agent")
-                .annotate(vehicle_no=Subquery(latest_dispatch_subquery))
-                .order_by("timestamp")
-            )
+        deviations = RouteDeviation.objects.select_related(
+            "session",
+            "agent",
+        ).order_by("-detected_at")
 
-            # Build response
-            data = [
+        data = []
+
+        for deviation in deviations:
+
+            data.append(
                 {
-                    "lat": loc.latitude,
-                    "lng": loc.longitude,
-                    "agent": loc.agent.fullName,
-                    "barcode": loc.barcode,
-                    "vehicle": loc.vehicle_no,  # Already annotated
+                    "id": deviation.id,
+                    "session_id": (deviation.session.id if deviation.session else None),
+                    "agent": (deviation.agent.fullName if deviation.agent else None),
+                    "latitude": deviation.latitude,
+                    "longitude": deviation.longitude,
+                    "planned_latitude": (deviation.planned_latitude),
+                    "planned_longitude": (deviation.planned_longitude),
+                    "distance": (
+                        round(deviation.deviation_distance, 2)
+                        if deviation.deviation_distance
+                        else 0
+                    ),
+                    "status": deviation.status,
+                    "detected_at": (deviation.detected_at),
                 }
-                for loc in qs
-            ]
+            )
 
-            return JsonResponse(data, safe=False)
+        return Response(data)
 
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
+
+class LiveDispatchers(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+
+        sessions = (
+            DispatchSession.objects.filter(status="ACTIVE")
+            .select_related("agent", "vehicle")
+            .prefetch_related("locations")
+        )
+
+        data = []
+
+        for session in sessions:
+
+            latest_location = session.locations.order_by("-timestamp").first()
+
+            if not latest_location:
+                continue
+
+            # route history (last 50 points for performance)
+            route = list(
+                session.locations.order_by("-timestamp")[:50].values(
+                    "latitude", "longitude", "timestamp"
+                )
+            )
+            # =================================
+            # PLANNED ROUTE
+            # =================================
+
+            planned_route = list(
+                DispatchRoutePoint.objects.filter(stop__session=session)
+                .order_by("stop__sequence", "sequence")
+                .values("latitude", "longitude")
+            )
+
+            # =================================
+            # ROUTE DEVIATIONS
+            # =================================
+
+            deviations = list(
+                RouteDeviation.objects.filter(session=session)
+                .order_by("-detected_at")
+                .values(
+                    "latitude",
+                    "longitude",
+                    "deviation_distance",
+                    "detected_at",
+                    "status",
+                )
+            )
+
+            # idle time (simple version)
+            idle_minutes = 0
+            if latest_location:
+                idle_minutes = int(
+                    (timezone.now() - latest_location.timestamp).total_seconds() / 60
+                )
+
+            data.append(
+                {
+                    "session_id": session.id,
+                    "agent": session.agent.fullName,
+                    "agent_id": session.agent.id,
+                    "vehicle": session.vehicle.vehicleNo if session.vehicle else None,
+                    "latitude": latest_location.latitude,
+                    "longitude": latest_location.longitude,
+                    "accuracy": latest_location.accuracy,
+                    "status": session.status,
+                    "started_at": session.started_at,
+                    "updated_at": latest_location.timestamp,
+                    "idle_minutes": idle_minutes,
+                    # route for replay
+                    # ACTUAL GPS HISTORY
+                    "route": [
+                        {
+                            "lat": p["latitude"],
+                            "lng": p["longitude"],
+                            "timestamp": p["timestamp"],
+                        }
+                        for p in route
+                    ],
+                    # PLANNED OSRM ROUTE
+                    "planned_route": [
+                        {
+                            "lat": p["latitude"],
+                            "lng": p["longitude"],
+                        }
+                        for p in planned_route
+                    ],
+                    "deviations": [
+                        {
+                            "lat": d["latitude"],
+                            "lng": d["longitude"],
+                            "distance": d["deviation_distance"],
+                            "detected_at": d["detected_at"],
+                            "status": d["status"],
+                        }
+                        for d in deviations
+                    ],
+                }
+            )
+
+        return Response(data)
 
 
 class HubViewSet(AuditedModelViewSet):
@@ -2120,3 +2986,709 @@ class DriverDocumentViewSet(AuditedModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(createdBy=self.request.user.fullName)
+
+
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+
+from .models import DispatchRoutePoint, DispatchSession
+from .serializers import DispatchRoutePointSerializer
+
+
+class CreateDispatchRoute(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+
+        session_id = request.data.get("session_id")
+        points = request.data.get("route")
+
+        if not session_id:
+            return Response(
+                {"detail": "session_id is required"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not points:
+            return Response(
+                {"detail": "route points are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            session = DispatchSession.objects.get(id=session_id)
+
+        except DispatchSession.DoesNotExist:
+
+            return Response(
+                {"detail": "Dispatch session not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # remove existing planned route
+        DispatchRoutePoint.objects.filter(session=session).delete()
+
+        route_objects = []
+
+        for index, point in enumerate(points):
+
+            route_objects.append(
+                DispatchRoutePoint(
+                    session=session,
+                    sequence=index + 1,
+                    latitude=point["lat"],
+                    longitude=point["lng"],
+                )
+            )
+
+        DispatchRoutePoint.objects.bulk_create(route_objects)
+
+        return Response(
+            {"message": "Route saved successfully", "points_saved": len(route_objects)},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+from django.db.models import Count, Avg, Q
+
+
+class RouteComplianceSummary(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+
+        data = []
+
+        agents = RouteDeviation.objects.values(
+            "agent_id",
+            "agent__fullName",
+        ).annotate(
+            total_deviations=Count("id"),
+            open_deviations=Count("id", filter=Q(status="OPEN")),
+            resolved_deviations=Count("id", filter=Q(status="RESOLVED")),
+            average_distance=Avg("deviation_distance"),
+        )
+
+        for agent in agents:
+
+            total = agent["total_deviations"]
+
+            resolved = agent["resolved_deviations"]
+
+            compliance = 100
+
+            if total > 0:
+                compliance = (resolved / total) * 100
+
+            data.append(
+                {
+                    "agent_id": agent["agent_id"],
+                    "agent": agent["agent__fullName"],
+                    "total_deviations": total,
+                    "open_deviations": agent["open_deviations"],
+                    "resolved_deviations": resolved,
+                    "average_distance": round(
+                        agent["average_distance"] or 0,
+                        2,
+                    ),
+                    "compliance_percentage": round(
+                        compliance,
+                        2,
+                    ),
+                }
+            )
+
+        return Response(data)
+
+
+class TodayRunStopsView(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+
+        session = (
+            DispatchSession.objects.filter(
+                agent=request.user,
+                status="ACTIVE",
+            )
+            .order_by("-started_at")
+            .first()
+        )
+
+        if not session:
+            return Response(
+                {"error": "No active dispatch session"},
+                status=400,
+            )
+
+        stops = session.stops.order_by("sequence")
+
+        data = []
+
+        # for stop in stops:
+
+        #     dispatches = Dispatch.objects.filter(
+        #         order_item__delivery_address=stop.address,
+        #         agent=request.user,
+        #         status__in=[
+        #             "PICKED_UP",
+        #             "IN_TRANSIT",
+        #             "OUT_FOR_DELIVERY",
+        #             "DELIVERED",
+        #         ],
+        #     )
+
+        #     total_items = dispatches.count()
+
+        #     delivered_items = dispatches.filter(status="DELIVERED").count()
+
+        #     returned_items = dispatches.filter(status="RETURNED").count()
+
+        #     issue_items = dispatches.filter(status="ISSUE").count()
+
+        #     partial_items = dispatches.filter(status="PARTIAL").count()
+
+        #     pending_items = dispatches.filter(
+        #         status__in=[
+        #             "ASSIGNED",
+        #             "PICKED_UP",
+        #             "IN_TRANSIT",
+        #         ]
+        #     ).count()
+        for stop in session.stops.all():
+
+            dispatches = stop.dispatches.all()
+
+            total_items = dispatches.count()
+
+            delivered_items = dispatches.filter(status="DELIVERED").count()
+
+            returned_items = dispatches.filter(status="RETURNED").count()
+
+            issue_items = dispatches.filter(status="ISSUE").count()
+            partial_items = dispatches.filter(status="PARTIAL").count()
+
+            final_statuses = [
+                "DELIVERED",
+                "RETURNED",
+                "ISSUE",
+                "DAMAGED",
+                "LOST",
+            ]
+
+            pending_items = dispatches.exclude(status__in=final_statuses).count()
+
+            completed = pending_items == 0
+            if total_items > 0:
+                progress_percent = round(
+                    ((total_items - pending_items) / total_items) * 100
+                )
+            else:
+                progress_percent = 0
+
+            processed_items = total_items - pending_items
+
+            if completed:
+                stop_status = "COMPLETED"
+            elif processed_items > 0:
+                stop_status = "IN_PROGRESS"
+            else:
+                stop_status = "PENDING"
+
+            data.append(
+                {
+                    "stop_id": stop.id,
+                    "sequence": stop.sequence,
+                    "customer_name": stop.customer_name,
+                    "address": stop.address,
+                    "latitude": stop.latitude,
+                    "longitude": stop.longitude,
+                    "total_items": total_items,
+                    "pending_items": pending_items,
+                    "delivered_items": delivered_items,
+                    "returned_items": returned_items,
+                    "issue_items": issue_items,
+                    "partial_items": partial_items,
+                    "completed": pending_items == 0,
+                    "processed_items": processed_items,
+                    "progress_percent": progress_percent,
+                    "stop_status": stop_status,
+                }
+            )
+
+        return Response(
+            {
+                "session_id": session.id,
+                "stops": data,
+            }
+        )
+
+
+class CompleteDeliveryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request):
+
+        dispatch_id = request.data.get("dispatch_id")
+        delivery_otp = request.data.get("delivery_otp")
+
+        if not dispatch_id:
+            return Response(
+                {"error": "Dispatch ID is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not delivery_otp:
+            return Response(
+                {"error": "Delivery OTP is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================
+        # GET DISPATCH
+        # =====================================
+
+        try:
+            dispatch = (
+                Dispatch.objects.select_for_update()
+                .select_related("order_item")
+                .get(
+                    id=dispatch_id,
+                    agent=request.user,
+                )
+            )
+
+        except Dispatch.DoesNotExist:
+            return Response(
+                {"error": "Dispatch not found or not assigned to you"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        item = dispatch.order_item
+
+        # =====================================
+        # STATUS VALIDATION
+        # =====================================
+
+        if dispatch.status not in [
+            "OUT_FOR_DELIVERY",
+            "IN_TRANSIT",
+        ]:
+            return Response(
+                {"error": f"Parcel cannot be delivered from status {dispatch.status}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================
+        # OTP VALIDATION
+        # =====================================
+
+        if item.delivery_otp != delivery_otp:
+            return Response(
+                {"error": "Invalid delivery OTP"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================
+        # COMPLETE DELIVERY
+        # =====================================
+
+        dispatch.status = "DELIVERED"
+        dispatch.delivered_at = timezone.now()
+
+        dispatch.save(
+            update_fields=[
+                "status",
+                "delivered_at",
+            ]
+        )
+
+        # Update item
+
+        item.flag = "DELIVERED"
+        item.save(
+            update_fields=[
+                "flag",
+            ]
+        )
+
+        # =====================================
+        # TRACKING HISTORY
+        # =====================================
+
+        create_tracking(
+            order_item=item,
+            stage="DELIVERED",
+            user=request.user,
+            remark="Item delivered successfully",
+        )
+
+        return Response(
+            {
+                "message": "Delivery completed successfully",
+                "dispatch_id": dispatch.id,
+                "barcode": item.barcode,
+                "delivered_at": dispatch.delivered_at,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# class DispatchStopItemsView(APIView):
+
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, stop_id):
+
+#         try:
+#             stop = DispatchStop.objects.get(
+#                 id=stop_id,
+#                 session__agent=request.user,
+#             )
+
+#         except DispatchStop.DoesNotExist:
+
+#             return Response(
+#                 {"error": "Stop not found"},
+#                 status=404,
+#             )
+
+#         dispatches = Dispatch.objects.filter(
+#             agent=request.user,
+#             order_item__delivery_address=stop.address,
+#             status__in=[
+#                 "PICKED_UP",
+#                 "IN_TRANSIT",
+#                 "OUT_FOR_DELIVERY",
+#             ],
+#         ).select_related("order_item")
+
+#         items = []
+
+#         for dispatch in dispatches:
+
+#             items.append(
+#                 {
+#                     "dispatch_id": dispatch.id,
+#                     "barcode": dispatch.order_item.barcode,
+#                     "item_id": dispatch.order_item.id,
+#                     "flag": dispatch.status,
+#                     "remark": dispatch.issue_reason,
+#                     "description": dispatch.order_item.description,
+#                     "receiver_name": dispatch.order_item.receiver_name,
+#                     "status": dispatch.status,
+#                 }
+#             )
+
+#         return Response(
+#             {
+#                 "stop_id": stop.id,
+#                 "customer": stop.customer_name,
+#                 "items": items,
+#             }
+#         )
+
+
+class DispatchStopItemsView(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, stop_id):
+
+        try:
+            stop = DispatchStop.objects.get(
+                id=stop_id,
+                session__agent=request.user,
+            )
+
+        except DispatchStop.DoesNotExist:
+
+            return Response(
+                {"error": "Stop not found"},
+                status=404,
+            )
+
+        # ====================================
+        # GET ITEMS BELONGING TO THIS STOP ONLY
+        # ====================================
+
+        dispatches = stop.dispatches.select_related("order_item").all()
+
+        items = []
+
+        for dispatch in dispatches:
+
+            item = dispatch.order_item
+            editable = dispatch.status not in [
+                "DELIVERED",
+                "RETURNED",
+                "ISSUE",
+                "DAMAGED",
+                "LOST",
+            ]
+
+            items.append(
+                {
+                    "dispatch_id": dispatch.id,
+                    "item_id": str(item.id),
+                    "barcode": item.barcode,
+                    "flag": dispatch.status,
+                    "status": dispatch.status,
+                    "remark": dispatch.issue_reason,
+                    "description": item.description,
+                    "receiver_name": item.receiver_name,
+                    "editable": editable,
+                }
+            )
+
+        return Response(
+            {
+                "stop_id": stop.id,
+                "customer": stop.customer_name,
+                "completed": stop.completed,
+                "items": items,
+            }
+        )
+
+
+class UpdateDeliveryExceptionView(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request):
+
+        dispatch_id = request.data.get("dispatch_id")
+        exception_status = request.data.get("status")
+        comment = request.data.get("comment")
+
+        if not dispatch_id:
+            return Response(
+                {"error": "Dispatch ID is required"},
+                status=400,
+            )
+
+        if exception_status not in [
+            "PARTIAL",
+            "RETURNED",
+            "ISSUE",
+        ]:
+            return Response(
+                {"error": "Invalid delivery exception status"},
+                status=400,
+            )
+
+        if not comment:
+            return Response(
+                {"error": "Comment is required for exception status"},
+                status=400,
+            )
+
+        try:
+
+            dispatch = (
+                Dispatch.objects.select_for_update()
+                .select_related("order_item")
+                .get(
+                    id=dispatch_id,
+                    agent=request.user,
+                )
+            )
+
+        except Dispatch.DoesNotExist:
+
+            return Response(
+                {"error": "Dispatch not found"},
+                status=404,
+            )
+
+        # ---------------------------------
+        # Validate current state
+        # ---------------------------------
+
+        if dispatch.status == "DELIVERED":
+
+            return Response(
+                {"error": "Delivered parcel cannot be changed"},
+                status=400,
+            )
+
+        # ---------------------------------
+        # Update dispatch
+        # ---------------------------------
+
+        dispatch.status = exception_status
+
+        dispatch.issue_reason = comment
+
+        dispatch.save(
+            update_fields=[
+                "status",
+                "issue_reason",
+            ]
+        )
+
+        item = dispatch.order_item
+
+        # ---------------------------------
+        # Update item flag
+        # ---------------------------------
+
+        if exception_status == "RETURNED":
+
+            item.flag = "INWARD_RETURNED"
+
+        elif exception_status in [
+            "PARTIAL",
+            "ISSUE",
+        ]:
+
+            item.flag = "OUTWARD_RETURNED"
+
+        item.save(update_fields=["flag"])
+
+        # ---------------------------------
+        # Tracking
+        # ---------------------------------
+
+        create_tracking(
+            order_item=item,
+            stage=exception_status,
+            user=request.user,
+            remark=comment,
+        )
+
+        return Response(
+            {
+                "message": "Delivery exception recorded",
+                "dispatch_id": dispatch.id,
+                "status": dispatch.status,
+                "comment": dispatch.issue_reason,
+            }
+        )
+
+
+class UpdateDeliveryStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, item_id):
+
+        status_value = request.data.get("status")
+        comment = request.data.get("comment")
+        otp = request.data.get("otp")
+
+        allowed_status = [
+            "DELIVERED",
+            "PARTIAL",
+            "RETURNED",
+            "ISSUE",
+        ]
+
+        if status_value not in allowed_status:
+            return Response({"error": "Invalid delivery status"}, status=400)
+
+        item = get_object_or_404(OrderItem, id=item_id)
+
+        dispatch = get_object_or_404(Dispatch, order_item=item, agent=request.user)
+
+        # ==========================
+        # COMMENT VALIDATION
+        # ==========================
+
+        if status_value in ["PARTIAL", "RETURNED", "ISSUE"]:
+
+            if not comment:
+                return Response(
+                    {"error": "Comment is required for this status"}, status=400
+                )
+
+        # ==========================
+        # OTP VALIDATION
+        # ==========================
+
+        if status_value == "DELIVERED":
+
+            if not otp:
+                return Response({"error": "Delivery OTP required"}, status=400)
+
+            if otp != item.delivery_otp:
+
+                return Response({"error": "Invalid delivery OTP"}, status=400)
+
+        # ==========================
+        # UPDATE DISPATCH
+        # ==========================
+
+        dispatch.status = status_value
+
+        if status_value == "DELIVERED":
+
+            dispatch.delivered_at = timezone.now()
+
+        if status_value in ["PARTIAL", "RETURNED", "ISSUE"]:
+
+            dispatch.issue_reason = comment
+
+        dispatch.save()
+
+        # ==========================
+        # UPDATE ITEM STATUS
+        # ==========================
+
+        item.flag = status_value
+
+        item.save(update_fields=["flag"])
+
+        # ==========================
+        # CREATE ITEM TRACKING
+        # ==========================
+
+        create_tracking(
+            order_item=item, stage=status_value, user=request.user, remark=comment
+        )
+
+        # ==========================
+        # UPDATE STOP COMPLETION
+        # ==========================
+
+        # for stop in dispatch.stops.all():
+        # update_stop_completion(stop)
+
+        # ==========================
+        # CHECK STOP COMPLETION
+        # ==========================
+
+        # completed_stops = []
+
+        # for stop in dispatch.stops.all():
+
+        # completed = update_stop_completion(stop)
+
+        # if completed:
+        # completed_stops.append(stop.id)
+        # ==========================
+        # UPDATE STOP COMPLETION
+        # ==========================
+
+        completed_stops = []
+
+        for stop in dispatch.stops.all():
+
+            completed = update_stop_completion(stop)
+
+            if completed:
+                completed_stops.append(stop.id)
+
+        return Response(
+            {
+                "message": f"Item updated to {status_value}",
+                "status": status_value,
+                "completed_stops": completed_stops,
+            }
+        )

@@ -1,0 +1,140 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+
+    <style>
+      body {
+        margin: 0;
+        background: #f4f6f9;
+        font-family: Arial, Helvetica, sans-serif;
+      }
+
+      .container {
+        width: 650px;
+        margin: auto;
+        background: white;
+      }
+
+      .header {
+        background: #0f4c81;
+        color: white;
+        text-align: center;
+        padding: 25px;
+      }
+
+      .content {
+        padding: 35px;
+        color: #444;
+        line-height: 1.8;
+      }
+      .message {
+        background: #ffffff;
+        border-left: 4px solid #0f4c81;
+        padding: 15px;
+        margin-top: 10px;
+        font-style: italic;
+      }
+
+      .card {
+        background: #f8f9fa;
+        border-left: 5px solid #0f4c81;
+        padding: 20px;
+        margin: 25px 0;
+      }
+
+      .old {
+        display: inline-block;
+        padding: 8px 18px;
+        background: #6c757d;
+        color: white;
+        border-radius: 20px;
+        font-weight: bold;
+      }
+
+      .new {
+        display: inline-block;
+        padding: 8px 18px;
+        background: #28a745;
+        color: white;
+        border-radius: 20px;
+        font-weight: bold;
+      }
+
+      .button {
+        display: inline-block;
+        background: #0f4c81;
+        color: white !important;
+        padding: 14px 28px;
+        text-decoration: none;
+        border-radius: 5px;
+        margin-top: 20px;
+      }
+
+      .footer {
+        background: #f5f5f5;
+        text-align: center;
+        padding: 20px;
+        font-size: 13px;
+        color: #666;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="header">
+        <h2>Paveway Logistics Limited</h2>
+        <h3>Support Ticket Status Updated</h3>
+      </div>
+
+      <div class="content">
+        <h2>Hello {{ customer.fullName }},</h2>
+
+        <p> Your support ticket has been updated by our support team. </p>
+
+        <div class="card">
+          <p
+            ><strong>Ticket Number</strong><br />
+            {{ ticket.ticketno }}</p
+          >
+
+          <p
+            ><strong>Issue</strong><br />
+            {{ ticket.issue }}</p
+          >
+
+          <p
+            ><strong>Previous Status</strong><br />
+            <span class="old">{{ old_status|upper }}</span>
+          </p>
+
+          <p
+            ><strong>Current Status</strong><br />
+            <span class="new">{{ ticket.flag|upper }}</span>
+          </p>
+          <p><strong>Update Comment</strong></p>
+
+          <div class="message"> {{ comment }} </div>
+
+          <p><strong>Updated By:</strong> {{ updated_by }}</p>
+
+          <p><strong>Date:</strong> {{ updated_at|date:"d M Y, H:i" }}</p>
+        </div>
+
+        <p>
+          Our team is actively working on your request. You will continue to
+          receive updates as progress is made.
+        </p>
+
+        <a href="{{ portal_url }}" class="button"> View Ticket </a>
+      </div>
+
+      <div class="footer">
+        This is an automated notification from {{ company }}.<br />
+
+        Support Email: {{ support_email }}
+      </div>
+    </div>
+  </body>
+</html>

@@ -14,6 +14,7 @@ class WalletFunding(models.Model):
     postedBy = models.CharField(max_length=200, default="")
     postedAt = models.DateTimeField(auto_now_add=True)
     txntype = models.CharField(max_length=20, default="Income")
+    fundtype = models.CharField(max_length=20, default="Transfer")
 
     def __str__(self):
         return self.txnRef

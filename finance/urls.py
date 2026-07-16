@@ -7,6 +7,8 @@ from .views import (
     IouRequestViewSet,
     ExpenseViewSet,
     ReportViewSet,
+    TodayWalletFundingViewSet,
+    CustomerWalletReport,
 )
 
 router = DefaultRouter()
@@ -14,6 +16,7 @@ router.register(r"wallet-funding", WalletFundingViewSet, basename="wallet-fundin
 router.register(r"iou-requests", IouRequestViewSet, basename="iou-requests")
 router.register(r"expenses", ExpenseViewSet, basename="expenses")
 router.register(r"reports", ReportViewSet, basename="reports")
+router.register(r"wallet-report", CustomerWalletReport, basename="wallet-report")
 
 
 urlpatterns = router.urls + [
@@ -28,4 +31,9 @@ urlpatterns = router.urls + [
         name="customer-wallet-transactions",
     ),
     path("my-iou-requests/<uuid:id>/", MyIouRequests.as_view(), name="my-iou-requests"),
+    path(
+        "today-wallet-funding/",
+        TodayWalletFundingViewSet.as_view({"get": "list"}),
+        name="today-wallet-funding",
+    ),
 ]

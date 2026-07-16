@@ -1,0 +1,120 @@
+<!doctype html>
+<html>
+  <head>
+    <style>
+      body {
+        margin: 0;
+        background: #f4f6f9;
+        font-family: Arial, Helvetica, sans-serif;
+      }
+
+      .container {
+        width: 650px;
+        margin: auto;
+        background: #ffffff;
+      }
+
+      .header {
+        background: #0f4c81;
+        color: white;
+        padding: 25px;
+        text-align: center;
+      }
+
+      .logo {
+        font-size: 28px;
+        font-weight: bold;
+      }
+
+      .content {
+        padding: 35px;
+        color: #444;
+        line-height: 1.7;
+      }
+
+      .card {
+        background: #f8f9fa;
+        border-left: 5px solid #0f4c81;
+        padding: 20px;
+        margin: 25px 0;
+      }
+
+      .status {
+        display: inline-block;
+        padding: 8px 15px;
+        background: #ffc107;
+        color: #000;
+        border-radius: 20px;
+        font-weight: bold;
+      }
+
+      .button {
+        display: inline-block;
+        background: #0f4c81;
+        color: white !important;
+        padding: 14px 30px;
+        text-decoration: none;
+        border-radius: 5px;
+        margin-top: 20px;
+      }
+
+      .footer {
+        background: #f1f1f1;
+        padding: 20px;
+        text-align: center;
+        color: #666;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="logo"> Paveway Logistics Limited </div>
+
+        <div> Customer Support </div>
+      </div>
+
+      <div class="content">
+        <h2>Hello {{ customer.fullName }},</h2>
+
+        <p>
+          Thank you for contacting our support team. Your ticket has been
+          successfully created and has been assigned a reference number.
+        </p>
+
+        <div class="card">
+          <p><strong>Ticket Number</strong><br />{{ ticket.ticketno }}</p>
+
+          <p><strong>Issue</strong><br />{{ ticket.issue }}</p>
+
+          <p
+            ><strong>Status</strong><br />
+            <span class="status">{{ ticket.flag|upper }}</span>
+          </p>
+
+          <p><strong>Date Created</strong><br />{{ ticket.created_at }}</p>
+        </div>
+
+        <p>
+          Our support engineers are reviewing your request. You will receive
+          another email whenever the status changes or when there is a new
+          response.
+        </p>
+
+        <a href="{{ portal_url }}" class="button"> View Ticket </a>
+      </div>
+
+      <div class="footer">
+        This is an automated email from {{ company }}.<br />
+
+        Please do not reply directly to this email.
+
+        <br /><br />
+
+        Support Email: {{ support_email }}
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,12 +1,19 @@
 from datetime import timedelta
 
 from rest_framework import serializers
+from .services.geocoding_service import build_coordinates
 from setup.utils import generate_staffNo
-from .utils import create_tracking, generate_waybill_no, geocode_address
+from .utils import (
+    build_clean_address,
+    create_tracking,
+    generate_waybill_no,
+    geocode_address,
+)
 from .models import (
     DriverDocument,
     Order,
     OrderItem,
+    DispatchRoutePoint,
     VehicleDocument,
     WarehouseScan,
     Vehicle,
@@ -157,12 +164,8 @@ class OrderSerializer(serializers.ModelSerializer):
 
             if item_address and item_address.strip():
 
-                full_address = (
-                    f"{item_address}, {zone_name}, "
-                    f"{lga_name}, {state_name}, Nigeria"
-                )
-
-                lat, lng = geocode_address(full_address.strip())
+                address = build_clean_address(item_address, state_name)
+                lat, lng = geocode_address(address)
 
             # SAVE ORDER ITEM
             order_item = OrderItem.objects.create(
@@ -461,6 +464,9 @@ class DispatchSerializer(serializers.ModelSerializer):
     barcode = serializers.CharField(source="order_item.barcode")
     vehicleNo = serializers.CharField(source="vehicle.vehicleNo", default=None)
     receiver = serializers.CharField(source="order_item.receiver_name", read_only=True)
+    receiver_email = serializers.CharField(
+        source="order_item.receiver_email", read_only=True
+    )
     address = serializers.CharField(
         source="order_item.delivery_address", read_only=True
     )
@@ -485,9 +491,11 @@ class DispatchSerializer(serializers.ModelSerializer):
             "agent",
             "batch_no",
             "delivered_at",
+            "receiver_email",
         ]
         extra_kwargs = {
             "delivered_at": {"required": False},
+            "receiver_email": {"required": False},
         }
 
 
@@ -988,3 +996,21 @@ class DriverDocumentSerializer(serializers.ModelSerializer):
         instance.save()
 
         return instance
+
+
+class DispatchRoutePointSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = DispatchRoutePoint
+        fields = [
+            "id",
+            "session",
+            "sequence",
+            "latitude",
+            "longitude",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "created_at",
+        ]

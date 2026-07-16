@@ -1,5 +1,6 @@
 from django.shortcuts import render
 from rest_framework.permissions import IsAuthenticated
+from .services.email_service import send_ticket_email
 from setup.utils import AuditedModelViewSet, generate_transid
 from .models import TicketDetail, Ticket
 from .serializers import TicketDetailSerializer, TicketSerializer
@@ -21,7 +22,7 @@ class TicketViewSet(AuditedModelViewSet):
 
         status = self.request.query_params.get("status")
 
-        qs = Ticket.objects.all()
+        qs = Ticket.objects.all().order_by("-created_at")
 
         if user.role == "Customer":
             qs = qs.filter(customer=user)
@@ -39,8 +40,29 @@ class TicketViewSet(AuditedModelViewSet):
         ticket = self.get_object()
 
         message = TicketDetail.objects.create(
-            ticket=ticket, comment=request.data["message"], created_by=request.user
+            ticket=ticket,
+            comment=request.data["message"],
+            created_by=request.user,
         )
+
+        # Determine the recipient (always notify the other party)
+        if request.user == ticket.customer:
+            recipient = ticket.assign_to
+        else:
+            recipient = ticket.customer
+
+        # Don't notify the sender or users without an email
+        if recipient and recipient != request.user and recipient.email:
+            send_ticket_email(
+                ticket=ticket,
+                recipient=recipient,
+                template="ticket_message.html",
+                subject=f"New Message on Ticket {ticket.ticketno}",
+                context={
+                    "message": message.comment,
+                    "sender": request.user.fullName,
+                },
+            )
 
         return Response(
             {
@@ -89,9 +111,14 @@ class TicketViewSet(AuditedModelViewSet):
         TicketDetail.objects.create(
             ticket=ticket, comment=request.data["issue"], created_by=user
         )
-
         serializer = self.get_serializer(ticket)
-
+        send_ticket_email(
+            ticket=ticket,
+            recipient=ticket.customer,
+            template="ticket_created.html",
+            subject=f"Support Ticket Created - {ticket.ticketno}",
+            context={},
+        )
         return Response(serializer.data)
 
     @action(detail=True, methods=["post"])
@@ -116,6 +143,44 @@ class TicketViewSet(AuditedModelViewSet):
                 break
 
         return Response({"typing": typing})
+
+    def update(self, request, *args, **kwargs):
+
+        ticket = self.get_object()
+
+        old_status = ticket.flag
+
+        response = super().update(request, *args, **kwargs)
+
+        ticket.refresh_from_db()
+
+        new_status = ticket.flag
+
+        if old_status != new_status:
+
+            latest_comment = ticket.messages.order_by("-created_at").first()
+
+            comment = (
+                latest_comment.comment
+                if latest_comment
+                else "No additional comment was provided."
+            )
+
+            send_ticket_email(
+                ticket=ticket,
+                recipient=ticket.customer,
+                template="ticket_status_updated.html",
+                subject=f"Ticket Status Updated - {ticket.ticketno}",
+                context={
+                    "old_status": old_status,
+                    "new_status": new_status,
+                    "comment": comment,
+                    "updated_by": request.user.fullName,
+                    "updated_at": timezone.now(),
+                },
+            )
+
+        return response
 
 
 class TicketDetailViewSet(AuditedModelViewSet):

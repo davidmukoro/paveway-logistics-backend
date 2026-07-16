@@ -35,6 +35,61 @@ class WalletFundingViewSet(AuditedModelViewSet):
     model_label = "Wallet Funding"
 
 
+class TodayWalletFundingViewSet(AuditedModelViewSet):
+    serializer_class = WalletSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    model_label = "Today's Wallet Funding"
+
+    def get_queryset(self):
+        today = timezone.now().date()
+        return WalletFunding.objects.filter(transactionDate=today).order_by("-id")
+
+
+class CustomerWalletReport(AuditedModelViewSet):
+    serializer_class = WalletSerializer  # Use the correct serializer
+    permission_classes = [permissions.IsAuthenticated]
+    model_label = "Wallet Funding Report"
+
+    def get_date_range(self, request):
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        if not start_date or not end_date:
+            return Response(
+                {"detail": "start_date and end_date are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        start_date = parse_date(start_date)
+        end_date = parse_date(end_date)
+
+        if not start_date or not end_date:
+            return Response(
+                {"detail": "Invalid date format. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return start_date, end_date
+
+    @action(detail=False, methods=["get"], url_path="wallet-funding-report")
+    def wallet_funding_report(self, request):
+
+        result = self.get_date_range(request)
+
+        if isinstance(result, Response):
+            return result
+
+        start_date, end_date = result
+
+        queryset = WalletFunding.objects.filter(
+            transactionDate__range=[start_date, end_date]
+        ).order_by("-id")
+
+        serializer = self.get_serializer(queryset, many=True)
+
+        return Response(serializer.data)
+
+
 class CustomerWalletBalance(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
