@@ -1,26 +1,9 @@
-# # core/cookie_auth.py
-
-# from rest_framework_simplejwt.authentication import JWTAuthentication
-# from rest_framework.exceptions import AuthenticationFailed
-
-# class CookieJWTAuthentication(JWTAuthentication):
-#     def authenticate(self, request):
-#         raw_token = request.COOKIES.get("access_token")
-
-#         if raw_token is None:
-#             return None
-
-#         try:
-#             validated_token = self.get_validated_token(raw_token)
-#             return self.get_user(validated_token), validated_token
-#         except Exception:
-#             raise AuthenticationFailed("Invalid or expired token")
-
 # core/cookie_auth.py
 
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from setup.models import UserSession  # adjust import
+
 
 class CookieJWTAuthentication(JWTAuthentication):
     def authenticate(self, request):
@@ -38,8 +21,7 @@ class CookieJWTAuthentication(JWTAuthentication):
 
             if session_id:
                 session = UserSession.objects.filter(
-                    id=session_id,
-                    is_active=True
+                    id=session_id, is_active=True
                 ).first()
 
                 if not session:

@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import api_view
 from rest_framework import status
 from finance.utils import compute_customer_wallet_balance
-from setup.utils import AuditedModelViewSet
+from setup.utils import AuditedModelViewSet, get_client_ip
 from .services.vendor_service import fetch_vendor_orders
 from django.db.models import Q
 from .models import (
@@ -54,13 +54,15 @@ from setup.models import User
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
-import pandas as pd
+
+# import pandas as pd
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from .serializers import VehicleSerializer, DispatcherSerializer
 from finance.models import WalletFunding
+from setup.models import Auditlog
 
 # from rest_framework.views import APIView
 from django.utils import timezone
@@ -90,6 +92,8 @@ from .services.osrm_service import get_route
 from .models import DispatchRoutePoint, AgentCurrentLocation, RouteDeviation
 from .services.deviation_service import check_route_deviation
 from .services.stop_service import update_stop_completion, update_stop_completion
+from setup.notifications.service import send_notification
+from setup.notifications.order_service import send_order_notification
 
 
 class WaybillHistory(APIView):
@@ -98,18 +102,15 @@ class WaybillHistory(APIView):
     def get(self, request):
         user = request.user
 
-        # If staff → return all orders
-        if user.is_staff:
-            orders = Order.objects.all()
-        else:
-            # Non-staff → return only user's orders
-            orders = Order.objects.filter(vendor_id=user.id)
+        queryset = OrderItem.objects.select_related("order")
 
-        orders = OrderItem.objects.select_related("order").order_by("-order_id")
+        if not user.is_staff:
+            queryset = queryset.filter(order__vendor_id=user.id)
 
-        serializer = WayBillHistorySerializer(orders, many=True)
+        queryset = queryset.order_by("-order_id")
 
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        serializer = WayBillHistorySerializer(queryset, many=True)
+        return Response(serializer.data)
 
 
 class OrderItemTrackingView(APIView):
@@ -195,6 +196,71 @@ class CreateOrderView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+# @api_view(["POST"])
+# def create_order_with_wallet_deduction(request):
+#     try:
+#         data = request.data
+
+#         with transaction.atomic():
+
+#             # 1. Check Balance
+#             total_bill = float(data["totalBill"])
+#             customer_balance = compute_customer_wallet_balance(data["vendor"])
+#             # customer_balance = float(data["customerBalance"])
+
+#             if customer_balance < total_bill:
+#                 return Response(
+#                     {"message": "Insufficient Balance"},
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+
+#             # 2. Deduct Wallet
+#             WalletFunding.objects.create(
+#                 customer_id=data["vendor"],
+#                 transactionDate=timezone.now(),
+#                 txntype="Expense",
+#                 amount=-total_bill,
+#                 txnRef=data["vendor_order_no"],
+#                 narration=f"Billing for {data['vendor_order_no']}",
+#                 postedBy=request.user.fullName,
+#             )
+
+#             # 3. Create Order using existing serializer
+#             serializer = OrderSerializer(
+#                 data=data,
+#                 context={
+#                     "request": request,
+#                     "source": data.get("source"),
+#                 },
+#             )
+
+#             if not serializer.is_valid():
+
+#                 # Raising exception ensures rollback
+#                 transaction.set_rollback(True)
+
+#                 return Response(
+#                     serializer.errors,
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+
+#             order = serializer.save(createdBy=request.user)
+
+#         return Response(
+#             {
+#                 "message": "Order created successfully",
+#                 "order_id": str(order.id),
+#             },
+#             status=status.HTTP_201_CREATED,
+#         )
+
+#     except Exception as e:
+#         return Response(
+#             {"message": str(e)},
+#             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#         )
+
+
 @api_view(["POST"])
 def create_order_with_wallet_deduction(request):
     try:
@@ -202,10 +268,13 @@ def create_order_with_wallet_deduction(request):
 
         with transaction.atomic():
 
-            # 1. Check Balance
+            # =====================================================
+            # 1. CHECK BALANCE
+            # =====================================================
+
             total_bill = float(data["totalBill"])
+
             customer_balance = compute_customer_wallet_balance(data["vendor"])
-            # customer_balance = float(data["customerBalance"])
 
             if customer_balance < total_bill:
                 return Response(
@@ -213,8 +282,11 @@ def create_order_with_wallet_deduction(request):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # 2. Deduct Wallet
-            WalletFunding.objects.create(
+            # =====================================================
+            # 2. DEDUCT WALLET
+            # =====================================================
+
+            wallet_transaction = WalletFunding.objects.create(
                 customer_id=data["vendor"],
                 transactionDate=timezone.now(),
                 txntype="Expense",
@@ -224,7 +296,31 @@ def create_order_with_wallet_deduction(request):
                 postedBy=request.user.fullName,
             )
 
-            # 3. Create Order using existing serializer
+            customer = User.objects.get(id=data["vendor"])
+            Auditlog.objects.create(
+                user=request.user,
+                action="WALLET_DEDUCTION",
+                model="WalletFunding",
+                object_id=str(wallet_transaction.pk),
+                after={
+                    "customer": {
+                        "id": str(customer.id),
+                        "name": customer.fullName,
+                    },
+                    "amount": float(wallet_transaction.amount),
+                    "balance_before": customer_balance,
+                    "balance_after": customer_balance - total_bill,
+                    "txnRef": wallet_transaction.txnRef,
+                    "txntype": wallet_transaction.txntype,
+                    "narration": wallet_transaction.narration,
+                },
+                ip_address=get_client_ip(request),
+            )
+
+            # =====================================================
+            # 3. CREATE ORDER
+            # =====================================================
+
             serializer = OrderSerializer(
                 data=data,
                 context={
@@ -235,7 +331,8 @@ def create_order_with_wallet_deduction(request):
 
             if not serializer.is_valid():
 
-                # Raising exception ensures rollback
+                # Raising an exception ensures the wallet
+                # deduction is rolled back.
                 transaction.set_rollback(True)
 
                 return Response(
@@ -244,6 +341,98 @@ def create_order_with_wallet_deduction(request):
                 )
 
             order = serializer.save(createdBy=request.user)
+
+            # =====================================================
+            # 4. SEND ORDER CREATED NOTIFICATION
+            # =====================================================
+
+            items = list(order.items.all())
+
+            # Group items by receiver
+            grouped_items = defaultdict(list)
+
+            for item in items:
+
+                receiver_key = (
+                    item.receiver_email or "",
+                    item.receiver_phone or "",
+                )
+
+                grouped_items[receiver_key].append(item)
+
+            for (
+                receiver_email,
+                receiver_phone,
+            ), receiver_items in grouped_items.items():
+
+                first_item = receiver_items[0]
+
+                sms_recipients = list(
+                    dict.fromkeys(
+                        phone.strip()
+                        for phone in [
+                            first_item.receiver_phone,
+                            first_item.sender_phone,
+                        ]
+                        if phone and phone.strip()
+                    )
+                )
+
+                notification_context = {
+                    "receiver": first_item.receiver_name,
+                    "sender": first_item.sender_name,
+                    "order": order,
+                    "items": receiver_items,
+                    "order_no": order.order_no,
+                    "vendor_order_no": order.vendor_order_no,
+                    "year": timezone.now().year,
+                }
+
+                email_subject = f"Order Created - {order.order_no}"
+
+                sms_message = (
+                    f"Your Paveway order {order.order_no} has been created "
+                    f"successfully. We will notify you as it progresses."
+                )
+
+                transaction.on_commit(
+                    lambda context=notification_context, receiver=receiver_email, phone=receiver_phone, cc=first_item.sender_email, sms_numbers=sms_recipients, subject=email_subject, message=sms_message: send_notification(
+                        notification_type="ORDER_CREATED",
+                        context=context,
+                        receiver_email=receiver,
+                        receiver_phone=phone,
+                        cc_email=cc,
+                        sms_recipients=sms_numbers,
+                        email_subject=subject,
+                        email_template="emails/order_created.html",
+                        sms_message=message,
+                    )
+                )
+
+            # =====================================================
+            # 4. AUDIT ORDER CREATION
+            # =====================================================
+
+            Auditlog.objects.create(
+                user=request.user,
+                action="CREATE",
+                model="Order",
+                object_id=str(order.pk),
+                after={
+                    "id": str(order.pk),
+                    "vendor_order_no": data.get("vendor_order_no"),
+                    "vendor_id": (
+                        str(data.get("vendor")) if data.get("vendor") else None
+                    ),
+                    "total_bill": total_bill,
+                    "source": data.get("source"),
+                },
+                ip_address=get_client_ip(request),
+            )
+
+        # =========================================================
+        # 5. SUCCESS RESPONSE
+        # =========================================================
 
         return Response(
             {
@@ -270,13 +459,53 @@ class VendorFetchView(APIView):
             return Response({"error": "vendor_id is required"}, status=400)
 
         vendor = get_object_or_404(User, pk=vendor_id)
+
         try:
-            external_data = fetch_vendor_orders(vendor)  # get_vendor_data(vendor)
+            external_data = fetch_vendor_orders(vendor)
+
             normalized = normalize_vendor_payload(external_data, vendor.id)
+
+            # Audit successful vendor fetch
+            Auditlog.objects.create(
+                user=request.user,
+                action="VENDOR_FETCH",
+                model="Vendor",
+                object_id=str(vendor.id),
+                ip_address=get_client_ip(request),
+                after={
+                    "vendor_id": str(vendor.id),
+                    "vendor_name": vendor.fullName,
+                    "vendor_username": vendor.username,
+                    "status": "SUCCESS",
+                },
+            )
+
             return Response(normalized)
+
         except Exception as e:
+
+            # Audit failed vendor fetch
+            Auditlog.objects.create(
+                user=request.user,
+                action="VENDOR_FETCH_FAILED",
+                model="Vendor",
+                object_id=str(vendor.id),
+                ip_address=get_client_ip(request),
+                after={
+                    "vendor_id": str(vendor.id),
+                    "vendor_name": vendor.fullName,
+                    "vendor_username": vendor.username,
+                    "status": "FAILED",
+                    "reason": str(e),
+                },
+            )
+
             return Response(
-                {"error": "Failed to fetch vendor data", "details": str(e)}, status=500
+                {
+                    "error": "Failed to fetch vendor data",
+                    "details": str(e),
+                },
+                status=500,
             )
 
 
@@ -284,6 +513,8 @@ class OrderUploadPreviewView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        import pandas as pd
+
         file = request.FILES.get("file")
         vendor_id = request.data.get("vendor")
 
@@ -308,11 +539,12 @@ class OrderUploadPreviewView(APIView):
                         "state": row.get("state"),
                         "lga": row.get("lga"),
                         "zone": row.get("zone"),
+                        "subarea": row.get("subarea"),
                         "weight": row.get("weight"),
                         "worth": row.get("worth"),
                     }
 
-                    # simple validation
+                    # Simple validation
                     if not item["barcode"]:
                         raise ValueError("Barcode is required")
 
@@ -321,16 +553,57 @@ class OrderUploadPreviewView(APIView):
                 except Exception as e:
                     errors.append({"row": index + 1, "error": str(e)})
 
+            # -----------------------------------------
+            # AUDIT SUCCESSFUL PREVIEW
+            # -----------------------------------------
+
+            Auditlog.objects.create(
+                user=request.user,
+                action="ORDER_UPLOAD",
+                model="Order",
+                object_id=str(vendor_id) if vendor_id else "0",
+                ip_address=get_client_ip(request),
+                after={
+                    "vendor_id": str(vendor_id) if vendor_id else None,
+                    "file_name": file.name,
+                    "file_size": file.size,
+                    "total_rows": len(df),
+                    "valid_items": len(items),
+                    "error_count": len(errors),
+                    "status": "SUCCESS",
+                },
+            )
+
             return Response(
                 {
                     "vendor": vendor_id,
                     "vendor_order_no": f"UPLOAD-{vendor_id}",
                     "items": items,
-                    "errors": errors,  # 🔥 RETURN ERRORS
+                    "errors": errors,
                 }
             )
 
         except Exception as e:
+
+            # -----------------------------------------
+            # AUDIT FAILED PREVIEW
+            # -----------------------------------------
+
+            Auditlog.objects.create(
+                user=request.user,
+                action="ORDER_UPLOAD_FAILED",
+                model="Order",
+                object_id=str(vendor_id) if vendor_id else "0",
+                ip_address=get_client_ip(request),
+                after={
+                    "vendor_id": str(vendor_id) if vendor_id else None,
+                    "file_name": file.name,
+                    "file_size": file.size,
+                    "status": "FAILED",
+                    "reason": str(e),
+                },
+            )
+
             return Response({"error": str(e)}, status=500)
 
 
@@ -384,6 +657,8 @@ class UploadOrderView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        import pandas as pd
+
         file = request.FILES.get("file")
 
         df = pd.read_excel(file)
@@ -406,6 +681,71 @@ class UploadOrderView(APIView):
         return Response({"message": "Uploaded successfully"})
 
 
+# class WarehouseScanView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def post(self, request):
+#         barcode = request.data.get("barcode")
+
+#         if not barcode:
+#             return Response({"error": "Barcode is required"}, status=400)
+
+#         try:
+#             item = OrderItem.objects.get(barcode=barcode)
+
+#             # already scanned
+#             if hasattr(item, "warehouse_scan"):
+#                 return Response(
+#                     {"error": "Item already scanned", "barcode": barcode}, status=400
+#                 )
+
+#             # mark item
+#             item.is_scanned = True
+#             item.scanned_at = timezone.now()
+#             item.flag = "WAREHOUSE"
+#             # item.delivery_fee=0. calculate it and lookup pricing template.
+#             item.save()
+
+#             # update tracking
+#             create_tracking(
+#                 order_item=item,
+#                 stage="WAREHOUSE",
+#                 user=request.user,
+#                 remark="Item Scanned into Warehouse",
+#             )
+
+#             # create warehouse record
+#             scan = WarehouseScan.objects.create(item=item, createdBy=request.user)
+
+#             return Response(
+#                 {
+#                     "message": "Item scanned successfully",
+#                     "item": {
+#                         "barcode": item.barcode,
+#                         "receiver": item.receiver_name,
+#                         "address": item.delivery_address,
+#                         "phone": item.receiver_phone,
+#                         "time_in": scan.time_in,
+#                     },
+#                 },
+#                 status=200,
+#             )
+
+#         except OrderItem.DoesNotExist:
+#             return Response({"error": "Invalid barcode"}, status=404)
+
+#     def get(self, request):
+#         scans = WarehouseScan.objects.select_related(
+#             "item",
+#             "item__order",
+#             "item__state",
+#             "item__lga",
+#             "item__zone",
+#         ).order_by("-time_in")
+
+
+#         serializer = WarehouseScanSerializer(scans, many=True)
+#         return Response(serializer.data)
 class WarehouseScanView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -413,25 +753,49 @@ class WarehouseScanView(APIView):
         barcode = request.data.get("barcode")
 
         if not barcode:
-            return Response({"error": "Barcode is required"}, status=400)
+            return Response(
+                {"error": "Barcode is required"},
+                status=400,
+            )
 
         try:
-            item = OrderItem.objects.get(barcode=barcode)
+            item = OrderItem.objects.select_related(
+                "order",
+                "state",
+                "lga",
+                "zone",
+            ).get(barcode=barcode)
 
-            # already scanned
+            # =====================================================
+            # ALREADY SCANNED
+            # =====================================================
+
             if hasattr(item, "warehouse_scan"):
                 return Response(
-                    {"error": "Item already scanned", "barcode": barcode}, status=400
+                    {
+                        "error": "Item already scanned",
+                        "barcode": barcode,
+                    },
+                    status=400,
                 )
 
-            # mark item
+            # =====================================================
+            # MARK ITEM
+            # =====================================================
+
             item.is_scanned = True
             item.scanned_at = timezone.now()
             item.flag = "WAREHOUSE"
-            # item.delivery_fee=0. calculate it and lookup pricing template.
+
+            # item.delivery_fee = ...
+            # calculate delivery fee here if required
+
             item.save()
 
-            # update tracking
+            # =====================================================
+            # UPDATE TRACKING
+            # =====================================================
+
             create_tracking(
                 order_item=item,
                 stage="WAREHOUSE",
@@ -439,8 +803,44 @@ class WarehouseScanView(APIView):
                 remark="Item Scanned into Warehouse",
             )
 
-            # create warehouse record
-            scan = WarehouseScan.objects.create(item=item, createdBy=request.user)
+            # =====================================================
+            # CREATE WAREHOUSE RECORD
+            # =====================================================
+
+            scan = WarehouseScan.objects.create(
+                item=item,
+                createdBy=request.user,
+            )
+
+            # =====================================================
+            # AUDIT LOG
+            # =====================================================
+
+            Auditlog.objects.create(
+                user=request.user,
+                action="WAREHOUSE_SCAN",
+                model="WarehouseScan",
+                object_id=str(scan.pk),
+                after={
+                    "barcode": item.barcode,
+                    "order_item_id": str(item.pk),
+                    "warehouse_scan_id": str(scan.pk),
+                    "receiver_name": item.receiver_name,
+                    "receiver_phone": item.receiver_phone,
+                    "delivery_address": item.delivery_address,
+                    "scanned_at": (
+                        item.scanned_at.isoformat() if item.scanned_at else None
+                    ),
+                    "flag": item.flag,
+                    # "stage": "WAREHOUSE",
+                    "remark": "Item Scanned into Warehouse",
+                },
+                ip_address=get_client_ip(request),
+            )
+
+            # =====================================================
+            # RESPONSE
+            # =====================================================
 
             return Response(
                 {
@@ -457,7 +857,10 @@ class WarehouseScanView(APIView):
             )
 
         except OrderItem.DoesNotExist:
-            return Response({"error": "Invalid barcode"}, status=404)
+            return Response(
+                {"error": "Invalid barcode"},
+                status=404,
+            )
 
     def get(self, request):
         scans = WarehouseScan.objects.select_related(
@@ -468,7 +871,11 @@ class WarehouseScanView(APIView):
             "item__zone",
         ).order_by("-time_in")
 
-        serializer = WarehouseScanSerializer(scans, many=True)
+        serializer = WarehouseScanSerializer(
+            scans,
+            many=True,
+        )
+
         return Response(serializer.data)
 
 
@@ -903,7 +1310,9 @@ class dispatcherPickupView(APIView):
 
     @transaction.atomic
     def post(self, request):
-        barcodes = request.data.get("barcodes", [])  # expect list
+
+        barcodes = request.data.get("barcodes", [])
+
         agent_id = request.data.get("agent_id")
         vehicle_id = request.data.get("vehicle_id")
         batchno = request.data.get("batchno")
@@ -911,87 +1320,168 @@ class dispatcherPickupView(APIView):
         if not barcodes:
             return Response({"error": "No barcodes provided"}, status=400)
 
-        # ===============================
-        # ✅ FETCH AGENT
-        # ===============================
+        # ==========================================
+        # FETCH AGENT
+        # ==========================================
+
         try:
+
             agent = User.objects.get(id=agent_id)
+
             agent.dispatcher_flag = "Unavailable"
             agent.save()
+
         except User.DoesNotExist:
+
             return Response({"error": "Invalid dispatcher"}, status=400)
 
-        # ===============================
-        # ✅ FETCH VEHICLE
-        # ===============================
+        # ==========================================
+        # FETCH VEHICLE
+        # ==========================================
+
         vehicle = None
+
         if vehicle_id:
+
             try:
+
                 vehicle = Vehicle.objects.get(id=vehicle_id)
+
                 vehicle.vehicleStatus = "In Use"
                 vehicle.save()
+
             except Vehicle.DoesNotExist:
+
                 return Response({"error": "Invalid vehicle"}, status=400)
 
-            # =============================
-            # Update the batch from pending to completed
-            # =============================
+            # ======================================
+            # UPDATE BATCH
+            # ======================================
+
             bn = driverpickup.objects.get(batch_no=batchno)
+
             bn.action_done = "Dispatched"
             bn.flag = "Completed"
             bn.save()
 
-        # ===============================
-        # ✅ FETCH ITEMS (LOCKED)
-        # ===============================
+        # ==========================================
+        # FETCH ITEMS
+        # ==========================================
+
         items = OrderItem.objects.select_for_update().filter(barcode__in=barcodes)
 
         if items.count() != len(barcodes):
+
             return Response({"error": "Some items not found"}, status=400)
 
-        # ===============================
-        # ✅ GROUPING STRUCTURE
-        # ===============================
+        # ==========================================
+        # GROUP ITEMS
+        # ==========================================
+
         grouped_items = defaultdict(list)
 
-        # ===============================
-        # ✅ PROCESS ITEMS
-        # ===============================
         for item in items:
 
-            # 🚫 Must be in warehouse
-            if item.flag not in ["WAREHOUSE", "IN_HUB_TRANSFER"]:
+            if item.flag not in [
+                "WAREHOUSE",
+                "IN_HUB_TRANSFER",
+            ]:
                 raise Exception(f"Item {item.id} is not in warehouse")
 
-            # 🚫 Prevent double dispatch
             if item.flag == "PICKED_UP":
                 raise Exception(f"Item {item.id} already dispatched")
 
-            # ===============================
-            # ✅ UPDATE WAREHOUSE SCAN
-            # ===============================
+            # ======================================
+            # UPDATE WAREHOUSE SCAN
+            # ======================================
+
             scan = getattr(item, "warehouse_scan", None)
+
             if scan and not scan.time_out:
+
                 scan.time_out = timezone.now()
                 scan.updatedBy = request.user.fullName
                 scan.flag = "PICKED_UP"
                 scan.save()
 
-            # ===============================
-            # ✅ GROUP KEY (receiver + batch)
-            # ===============================
-            group_key = (item.receiver_email, batchno)
+            # ======================================
+            # GROUP BY RECEIVER + BATCH
+            # ======================================
+
+            group_key = (
+                item.receiver_email,
+                batchno,
+            )
+
             grouped_items[group_key].append(item)
 
-        # ===============================
-        # ✅ PROCESS GROUPS (ONE OTP EACH)
-        # ===============================
+        # ==========================================
+        # PROCESS EACH RECEIVER GROUP
+        # ==========================================
+
+        # for (receiver_email, batchno), items_group in grouped_items.items():
+
+        #     otp = generate_delivery_code()
+
+        #     # ======================================
+        #     # CREATE DISPATCH
+        #     # ======================================
+
+        #     for item in items_group:
+
+        #         Dispatch.objects.create(
+        #             order_item=item,
+        #             agent=agent,
+        #             vehicle=vehicle,
+        #             status="PICKED_UP",
+        #             picked_up_at=timezone.now(),
+        #             picked_up_by=agent,
+        #             assigned_by=request.user,
+        #             batch_no=batchno,
+        #         )
+
+        #         # ==================================
+        #         # UPDATE ITEM
+        #         # ==================================
+
+        #         item.flag = "PICKED_UP"
+
+        #         item.delivery_otp = otp
+
+        #         item.waybillNo = generate_waybill_no(
+        #             item.state.code if item.state else "XXX"
+        #         )
+
+        #         item.save()
+
+        #         # ==================================
+        #         # TRACKING
+        #         # ==================================
+
+        #         create_tracking(
+        #             order_item=item,
+        #             stage="PICKED_UP",
+        #             user=request.user,
+        #             remark="Item Picked Up for Delivery",
+        #         )
+
+        #     # ======================================
+        #     # QUEUE NOTIFICATION
+        #     # ======================================
+
+        #     self.queue_out_for_delivery_notification(
+        #         items_group=items_group,
+        #         otp=otp,
+        #         agent=agent,
+        #         vehicle=vehicle,
+        #         receiver_email=receiver_email,
+        #     )
         for (receiver_email, batchno), items_group in grouped_items.items():
 
             otp = generate_delivery_code()
 
             for item in items_group:
-                # CREATE DISPATCH
+
                 Dispatch.objects.create(
                     order_item=item,
                     agent=agent,
@@ -1003,7 +1493,6 @@ class dispatcherPickupView(APIView):
                     batch_no=batchno,
                 )
 
-                # UPDATE ITEM
                 item.flag = "PICKED_UP"
                 item.delivery_otp = otp
                 item.waybillNo = generate_waybill_no(
@@ -1018,42 +1507,38 @@ class dispatcherPickupView(APIView):
                     remark="Item Picked Up for Delivery",
                 )
 
-            # ===============================
-            # ✅ SEND ONE EMAIL PER RECEIVER
-            # ===============================
-            first_item = items_group[0]
+            # ==========================================
+            # SEND OUT-FOR-DELIVERY NOTIFICATION
+            # ==========================================
 
-            context = {
-                "receiver": first_item.receiver_name,
-                "otp": otp,
-                "items": items_group,
-                "agent_name": agent.fullName,
-                "agent_phone": agent.mobileNo,
-                "vehicle_no": vehicle.vehicleNo if vehicle else "N/A",
-                "vehicle_tag": vehicle.vehicleTag if vehicle else "N/A",
-                "year": timezone.now().year,
-            }
-
-            subject = "Your Items Are Out for Delivery - OTP Inside"
-            cc_email = first_item.sender_email
-
-            html_content = render_to_string("emails/pickup_bulk.html", context)
-
-            email = EmailMultiAlternatives(
-                subject,
-                "",
-                settings.DEFAULT_FROM_EMAIL,
-                to=[receiver_email],
-                cc=[cc_email] if cc_email else [],
+            send_order_notification(
+                notification_type="OUT_FOR_DELIVERY",
+                items=items_group,
+                email_subject="Your Items Are Out for Delivery - OTP Inside",
+                email_template="emails/pickup_bulk.html",
+                sms_message=(
+                    f"Your Paveway order is out for delivery. "
+                    f"Delivery OTP: {otp}. "
+                    f"Driver: {agent.fullName}, {agent.mobileNo}. "
+                    f"Vehicle: {vehicle.vehicleNo if vehicle else 'N/A'}."
+                ),
+                extra_context={
+                    "otp": otp,
+                    "agent_name": agent.fullName,
+                    "agent_phone": agent.mobileNo,
+                    "vehicle_no": vehicle.vehicleNo if vehicle else "N/A",
+                    "vehicle_tag": vehicle.vehicleTag if vehicle else "N/A",
+                    "year": timezone.now().year,
+                },
             )
-            email.attach_alternative(html_content, "text/html")
-            email.send()
 
         return Response({"message": "Bulk dispatch successful"}, status=201)
 
     @transaction.atomic
     def put(self, request):
-        barcodes = request.data.get("barcodes", [])  # expect list
+
+        barcodes = request.data.get("barcodes", [])
+
         agent_id = request.data.get("agent_id")
         vehicle_id = request.data.get("vehicle_id")
         batchno = request.data.get("batchno")
@@ -1061,107 +1546,136 @@ class dispatcherPickupView(APIView):
         if not barcodes:
             return Response({"error": "No barcodes provided"}, status=400)
 
-        # ===============================
-        # ✅ FETCH AGENT
-        # ===============================
+        # ==========================================
+        # FETCH AGENT
+        # ==========================================
+
         try:
+
             agent = User.objects.get(id=agent_id)
+
             agent.dispatcher_flag = "Unavailable"
             agent.save()
+
         except User.DoesNotExist:
+
             return Response({"error": "Invalid dispatcher"}, status=400)
 
-        # ===============================
-        # ✅ FETCH VEHICLE
-        # ===============================
+        # ==========================================
+        # FETCH VEHICLE
+        # ==========================================
+
         vehicle = None
+
         if vehicle_id:
+
             try:
+
                 vehicle = Vehicle.objects.get(id=vehicle_id)
+
                 vehicle.vehicleStatus = "In Use"
                 vehicle.save()
+
             except Vehicle.DoesNotExist:
+
                 return Response({"error": "Invalid vehicle"}, status=400)
 
-            # =============================
-            # Update the batch from pending to completed
-            # =============================
+            # ======================================
+            # UPDATE BATCH
+            # ======================================
+
             bn = driverpickup.objects.get(batch_no=batchno)
+
             bn.action_done = "Dispatched"
             bn.flag = "Completed"
             bn.save()
 
-        # ===============================
-        # ✅ FETCH ITEMS (LOCKED)
-        # ===============================
+        # ==========================================
+        # FETCH ITEMS
+        # ==========================================
+
         items = OrderItem.objects.select_for_update().filter(barcode__in=barcodes)
 
-        # Transfer Item from hub
+        # ==========================================
+        # HUB TRANSFER ITEMS
+        # ==========================================
+
         transferitem = HubTransferItem.objects.select_for_update().filter(
             barcode__in=barcodes
         )
+
         transferitem.update(flag="PICKED_UP")
 
         if items.count() != len(barcodes):
+
             return Response({"error": "Some items not found"}, status=400)
 
-        # ===============================
-        # ✅ GROUPING STRUCTURE
-        # ===============================
+        # ==========================================
+        # GROUP ITEMS
+        # ==========================================
+
         grouped_items = defaultdict(list)
 
-        # ===============================
-        # ✅ PROCESS ITEMS
-        # ===============================
         for item in items:
 
-            # 🚫 Must be in warehouse
-            if item.flag not in ["WAREHOUSE", "IN_HUB_TRANSFER"]:
+            if item.flag not in [
+                "WAREHOUSE",
+                "IN_HUB_TRANSFER",
+            ]:
                 raise Exception(f"Item {item.id} is not in warehouse")
 
-            # 🚫 Prevent double dispatch
             if item.flag == "PICKED_UP":
                 raise Exception(f"Item {item.id} already dispatched")
 
-            # ===============================
-            # ✅ UPDATE WAREHOUSE SCAN
-            # ===============================
+            # ======================================
+            # HUB TRANSFER TRACKING
+            # ======================================
+
             create_tracking(
                 order_item=item,
                 stage="HUB_TRANSFER",
                 user=request.user,
                 remark="Item Transferred to Hub",
             )
+
+            # ======================================
+            # WAREHOUSE SCAN
+            # ======================================
+
             scan = getattr(item, "warehouse_scan", None)
-            # scan = WarehouseScan.objects.filter(item=item).first()
-            if scan:  # and not scan.time_out:
+
+            if scan:
+
                 scan.time_out = timezone.now()
                 scan.updatedBy = request.user.fullName
                 scan.flag = "PICKED_UP"
                 scan.save()
 
-                # ===============================
-                # ✅ UPDATE ORDER ITEM
-                # ===============================
+            # ======================================
+            # GROUP
+            # ======================================
 
-                item.flag = "PICKED_UP"
-                scan.save()
+            group_key = (
+                item.receiver_email,
+                batchno,
+            )
 
-            # ===============================
-            # ✅ GROUP KEY (receiver + batch)
-            # ===============================
-            group_key = (item.receiver_email, batchno)
             grouped_items[group_key].append(item)
 
-        # ===============================
-        # ✅ PROCESS GROUPS (ONE OTP EACH)
-        # ===============================
+        # ==========================================
+        # PROCESS EACH RECEIVER GROUP
+        # ==========================================
+
         for (receiver_email, batchno), items_group in grouped_items.items():
 
             otp = generate_delivery_code()
 
+            # ======================================
+            # PROCESS ITEMS
+            # ======================================
+
             for item in items_group:
-                # CREATE DISPATCH
+
                 HubScan.objects.create(
                     transfer_item=transferitem.get(barcode=item.barcode),
                     agent=agent,
@@ -1170,50 +1684,59 @@ class dispatcherPickupView(APIView):
                     created_at=timezone.now(),
                     scanned_by=request.user,
                 )
+
                 create_tracking(
                     order_item=item,
                     stage="PICKED_UP_FROM_HUB",
-                    user=self.context["request"].user,
-                    remark="Item Picked up from Hub to Delivery",
+                    user=request.user,
+                    remark=("Item Picked up from Hub to Delivery"),
                 )
+
+                # ==================================
                 # UPDATE ITEM
+                # ==================================
+
                 item.flag = "PICKED_UP"
+
                 item.delivery_otp = otp
+
                 item.waybillNo = generate_waybill_no(
                     item.state.code if item.state else "XXX"
                 )
+
                 item.save()
 
-            # ===============================
-            # ✅ SEND ONE EMAIL PER RECEIVER
-            # ===============================
-            first_item = items_group[0]
+            # ======================================
+            # QUEUE NOTIFICATION
+            # ======================================
 
-            context = {
-                "receiver": first_item.receiver_name,
-                "otp": otp,
-                "items": items_group,
-                "agent_name": agent.fullName,
-                "agent_phone": agent.mobileNo,
-                "vehicle_no": vehicle.vehicleNo if vehicle else "N/A",
-                "vehicle_tag": vehicle.vehicleTag if vehicle else "N/A",
-                "year": timezone.now().year,
-            }
-
-            subject = "Your Items Are Out for Delivery - OTP Inside"
-            cc_email = first_item.sender_email
-
-            html_content = render_to_string("emails/pickup_bulk.html", context)
-
-            email = EmailMultiAlternatives(
-                subject,
-                "",
-                settings.DEFAULT_FROM_EMAIL,
-                to=[receiver_email],
-                cc=[cc_email] if cc_email else [],
+            # self.queue_out_for_delivery_notification(
+            #     items_group=items_group,
+            #     otp=otp,
+            #     agent=agent,
+            #     vehicle=vehicle,
+            #     receiver_email=receiver_email,
+            # )
+            send_order_notification(
+                notification_type="OUT_FOR_DELIVERY",
+                items=items_group,
+                email_subject="Your Items Are Out for Delivery - OTP Inside",
+                email_template="emails/pickup_bulk.html",
+                sms_message=(
+                    f"Your Paveway order is out for delivery. "
+                    f"Delivery OTP: {otp}. "
+                    f"Driver: {agent.fullName}, {agent.mobileNo}. "
+                    f"Vehicle: {vehicle.vehicleNo if vehicle else 'N/A'}."
+                ),
+                extra_context={
+                    "otp": otp,
+                    "agent_name": agent.fullName,
+                    "agent_phone": agent.mobileNo,
+                    "vehicle_no": vehicle.vehicleNo if vehicle else "N/A",
+                    "vehicle_tag": vehicle.vehicleTag if vehicle else "N/A",
+                    "year": timezone.now().year,
+                },
             )
-            email.attach_alternative(html_content, "text/html")
-            email.send()
 
         return Response({"message": "Bulk dispatch successful"}, status=200)
 
@@ -1769,10 +2292,6 @@ class MyDispatchView(APIView):
 #                 },
 #             }
 #         )
-
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 
 
 class TodayRunView(APIView):
@@ -2459,16 +2978,81 @@ class StartDispatchSession(APIView):
                 origin_lat = stop.latitude
                 origin_lng = stop.longitude
 
-        # ==================================
-        # MOVE PARCELS TO IN_TRANSIT
-        # ==================================
+        # # ==================================
+        # # MOVE PARCELS TO IN_TRANSIT
+        # # ==================================
 
-        # updated = parcels.update(status="IN_TRANSIT")
-        updated = parcels.filter(
-            status__in=[
-                "PICKED_UP",
-            ]
-        ).update(status="IN_TRANSIT")
+        # # updated = parcels.update(status="IN_TRANSIT")
+        # updated = parcels.filter(
+        #     status__in=[
+        #         "PICKED_UP",
+        #     ]
+        # ).update(status="IN_TRANSIT")
+        # ==========================================
+        # MOVE PARCELS TO IN_TRANSIT
+        # ==========================================
+
+        transit_parcels = list(
+            parcels.filter(status="PICKED_UP").select_related(
+                "order_item",
+                "order_item__order",
+            )
+        )
+
+        updated = 0
+
+        if transit_parcels:
+
+            # --------------------------------------
+            # Update dispatch status
+            # --------------------------------------
+
+            Dispatch.objects.filter(
+                id__in=[parcel.id for parcel in transit_parcels]
+            ).update(status="IN_TRANSIT")
+
+            updated = len(transit_parcels)
+
+            # --------------------------------------
+            # Update OrderItem status
+            # --------------------------------------
+
+            OrderItem.objects.filter(
+                id__in=[parcel.order_item.id for parcel in transit_parcels]
+            ).update(flag="IN_TRANSIT")
+
+            # --------------------------------------
+            # Create tracking
+            # --------------------------------------
+
+            for parcel in transit_parcels:
+
+                create_tracking(
+                    order_item=parcel.order_item,
+                    stage="IN_TRANSIT",
+                    user=request.user,
+                    remark="Item is now in transit",
+                )
+
+            # --------------------------------------
+            # Send notification
+            # --------------------------------------
+
+            send_order_notification(
+                notification_type="ORDER_IN_TRANSIT",
+                items=[parcel.order_item for parcel in transit_parcels],
+                email_subject="Your Paveway Order Is Now In Transit",
+                email_template="emails/order_status_update.html",
+                sms_message=(
+                    "Your Paveway order is now in transit. "
+                    "Please track your delivery for updates."
+                ),
+                extra_context={
+                    "status": "IN_TRANSIT",
+                    "agent_name": request.user.fullName,
+                    "agent_phone": request.user.mobileNo,
+                },
+            )
         return Response(
             {
                 "session_id": session.id,
@@ -3104,6 +3688,99 @@ class RouteComplianceSummary(APIView):
         return Response(data)
 
 
+# class TodayRunStopsView(APIView):
+
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request):
+
+#         session = (
+#             DispatchSession.objects.filter(
+#                 agent=request.user,
+#                 status="ACTIVE",
+#             )
+#             .order_by("-started_at")
+#             .first()
+#         )
+
+#         if not session:
+#             return Response(
+#                 {"error": "No active dispatch session"},
+#                 status=400,
+#             )
+
+#         stops = session.stops.order_by("sequence")
+
+#         data = []
+
+#         for stop in session.stops.all():
+
+#             dispatches = stop.dispatches.all()
+
+#             total_items = dispatches.count()
+
+#             delivered_items = dispatches.filter(status="DELIVERED").count()
+
+#             returned_items = dispatches.filter(status="RETURNED").count()
+
+#             issue_items = dispatches.filter(status="ISSUE").count()
+#             partial_items = dispatches.filter(status="PARTIAL").count()
+
+#             final_statuses = [
+#                 "DELIVERED",
+#                 "RETURNED",
+#                 "ISSUE",
+#                 "DAMAGED",
+#                 "LOST",
+#             ]
+
+#             pending_items = dispatches.exclude(status__in=final_statuses).count()
+
+#             completed = pending_items == 0
+#             if total_items > 0:
+#                 progress_percent = round(
+#                     ((total_items - pending_items) / total_items) * 100
+#                 )
+#             else:
+#                 progress_percent = 0
+
+#             processed_items = total_items - pending_items
+
+#             if completed:
+#                 stop_status = "COMPLETED"
+#             elif processed_items > 0:
+#                 stop_status = "IN_PROGRESS"
+#             else:
+#                 stop_status = "PENDING"
+
+#             data.append(
+#                 {
+#                     "stop_id": stop.id,
+#                     "sequence": stop.sequence,
+#                     "customer_name": stop.customer_name,
+#                     "address": stop.address,
+#                     "latitude": stop.latitude,
+#                     "longitude": stop.longitude,
+#                     "total_items": total_items,
+#                     "pending_items": pending_items,
+#                     "delivered_items": delivered_items,
+#                     "returned_items": returned_items,
+#                     "issue_items": issue_items,
+#                     "partial_items": partial_items,
+#                     "completed": pending_items == 0,
+#                     "processed_items": processed_items,
+#                     "progress_percent": progress_percent,
+#                     "stop_status": stop_status,
+#                 }
+#             )
+
+
+#         return Response(
+#             {
+#                 "session_id": session.id,
+#                 "stops": data,
+#             }
+#         )
 class TodayRunStopsView(APIView):
 
     permission_classes = [IsAuthenticated]
@@ -3125,41 +3802,36 @@ class TodayRunStopsView(APIView):
                 status=400,
             )
 
+        # ==========================================
+        # GET DRIVER CURRENT GPS LOCATION
+        # ==========================================
+
+        current_location = AgentCurrentLocation.objects.filter(
+            agent=request.user
+        ).first()
+
+        # ==========================================
+        # GET STOPS
+        # ==========================================
+
         stops = session.stops.order_by("sequence")
 
         data = []
 
-        # for stop in stops:
+        final_statuses = [
+            "DELIVERED",
+            "RETURNED",
+            "ISSUE",
+            "DAMAGED",
+            "LOST",
+        ]
 
-        #     dispatches = Dispatch.objects.filter(
-        #         order_item__delivery_address=stop.address,
-        #         agent=request.user,
-        #         status__in=[
-        #             "PICKED_UP",
-        #             "IN_TRANSIT",
-        #             "OUT_FOR_DELIVERY",
-        #             "DELIVERED",
-        #         ],
-        #     )
+        # ==========================================
+        # FIRST PASS
+        # CALCULATE STOP STATISTICS
+        # ==========================================
 
-        #     total_items = dispatches.count()
-
-        #     delivered_items = dispatches.filter(status="DELIVERED").count()
-
-        #     returned_items = dispatches.filter(status="RETURNED").count()
-
-        #     issue_items = dispatches.filter(status="ISSUE").count()
-
-        #     partial_items = dispatches.filter(status="PARTIAL").count()
-
-        #     pending_items = dispatches.filter(
-        #         status__in=[
-        #             "ASSIGNED",
-        #             "PICKED_UP",
-        #             "IN_TRANSIT",
-        #         ]
-        #     ).count()
-        for stop in session.stops.all():
+        for stop in stops:
 
             dispatches = stop.dispatches.all()
 
@@ -3170,19 +3842,13 @@ class TodayRunStopsView(APIView):
             returned_items = dispatches.filter(status="RETURNED").count()
 
             issue_items = dispatches.filter(status="ISSUE").count()
-            partial_items = dispatches.filter(status="PARTIAL").count()
 
-            final_statuses = [
-                "DELIVERED",
-                "RETURNED",
-                "ISSUE",
-                "DAMAGED",
-                "LOST",
-            ]
+            partial_items = dispatches.filter(status="PARTIAL").count()
 
             pending_items = dispatches.exclude(status__in=final_statuses).count()
 
             completed = pending_items == 0
+
             if total_items > 0:
                 progress_percent = round(
                     ((total_items - pending_items) / total_items) * 100
@@ -3194,10 +3860,37 @@ class TodayRunStopsView(APIView):
 
             if completed:
                 stop_status = "COMPLETED"
+
             elif processed_items > 0:
                 stop_status = "IN_PROGRESS"
+
             else:
                 stop_status = "PENDING"
+
+            # ==========================================
+            # CALCULATE DISTANCE FROM DRIVER
+            # ==========================================
+
+            distance_km = None
+
+            if (
+                current_location
+                and not completed
+                and stop.latitude is not None
+                and stop.longitude is not None
+            ):
+
+                distance_m = distance_meters(
+                    current_location.latitude,
+                    current_location.longitude,
+                    stop.latitude,
+                    stop.longitude,
+                )
+
+                distance_km = round(
+                    distance_m / 1000,
+                    2,
+                )
 
             data.append(
                 {
@@ -3213,16 +3906,50 @@ class TodayRunStopsView(APIView):
                     "returned_items": returned_items,
                     "issue_items": issue_items,
                     "partial_items": partial_items,
-                    "completed": pending_items == 0,
+                    "completed": completed,
                     "processed_items": processed_items,
                     "progress_percent": progress_percent,
                     "stop_status": stop_status,
+                    # Route optimization
+                    "distance_km": distance_km,
+                    "is_next_stop": False,
                 }
             )
+
+        # ==========================================
+        # FIND NEAREST PENDING STOP
+        # ==========================================
+
+        pending_stops = [
+            stop
+            for stop in data
+            if not stop["completed"] and stop["distance_km"] is not None
+        ]
+
+        if pending_stops:
+
+            nearest_stop = min(
+                pending_stops,
+                key=lambda stop: stop["distance_km"],
+            )
+
+            nearest_stop["is_next_stop"] = True
+
+        # ==========================================
+        # RESPONSE
+        # ==========================================
 
         return Response(
             {
                 "session_id": session.id,
+                "driver_location": (
+                    {
+                        "latitude": current_location.latitude,
+                        "longitude": current_location.longitude,
+                    }
+                    if current_location
+                    else None
+                ),
                 "stops": data,
             }
         )
@@ -3573,7 +4300,110 @@ class UpdateDeliveryExceptionView(APIView):
         )
 
 
+# class UpdateDeliveryStatusView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @transaction.atomic
+#     def post(self, request, item_id):
+
+#         status_value = request.data.get("status")
+#         comment = request.data.get("comment")
+#         otp = request.data.get("otp")
+
+#         allowed_status = [
+#             "DELIVERED",
+#             "PARTIAL",
+#             "RETURNED",
+#             "ISSUE",
+#         ]
+
+#         if status_value not in allowed_status:
+#             return Response({"error": "Invalid delivery status"}, status=400)
+
+#         item = get_object_or_404(OrderItem, id=item_id)
+
+#         dispatch = get_object_or_404(Dispatch, order_item=item, agent=request.user)
+
+#         # ==========================
+#         # COMMENT VALIDATION
+#         # ==========================
+
+#         if status_value in ["PARTIAL", "RETURNED", "ISSUE"]:
+
+#             if not comment:
+#                 return Response(
+#                     {"error": "Comment is required for this status"}, status=400
+#                 )
+
+#         # ==========================
+#         # OTP VALIDATION
+#         # ==========================
+
+#         if status_value == "DELIVERED":
+
+#             if not otp:
+#                 return Response({"error": "Delivery OTP required"}, status=400)
+
+#             if otp != item.delivery_otp:
+
+#                 return Response({"error": "Invalid delivery OTP"}, status=400)
+
+#         # ==========================
+#         # UPDATE DISPATCH
+#         # ==========================
+
+#         dispatch.status = status_value
+
+#         if status_value == "DELIVERED":
+
+#             dispatch.delivered_at = timezone.now()
+
+#         if status_value in ["PARTIAL", "RETURNED", "ISSUE"]:
+
+#             dispatch.issue_reason = comment
+
+#         dispatch.save()
+
+#         # ==========================
+#         # UPDATE ITEM STATUS
+#         # ==========================
+
+#         item.flag = status_value
+
+#         item.save(update_fields=["flag"])
+
+#         # ==========================
+#         # CREATE ITEM TRACKING
+#         # ==========================
+
+#         create_tracking(
+#             order_item=item, stage=status_value, user=request.user, remark=comment
+#         )
+
+
+#         # ==========================
+#         # UPDATE STOP COMPLETION
+#         # ==========================
+
+#         completed_stops = []
+
+#         for stop in dispatch.stops.all():
+
+#             completed = update_stop_completion(stop)
+
+#             if completed:
+#                 completed_stops.append(stop.id)
+
+
+#         return Response(
+#             {
+#                 "message": f"Item updated to {status_value}",
+#                 "status": status_value,
+#                 "completed_stops": completed_stops,
+#             }
+#         )
 class UpdateDeliveryStatusView(APIView):
+
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
@@ -3590,27 +4420,42 @@ class UpdateDeliveryStatusView(APIView):
             "ISSUE",
         ]
 
+        # =====================================================
+        # VALIDATE STATUS
+        # =====================================================
+
         if status_value not in allowed_status:
             return Response({"error": "Invalid delivery status"}, status=400)
 
+        # =====================================================
+        # FETCH ITEM
+        # =====================================================
+
         item = get_object_or_404(OrderItem, id=item_id)
+
+        # =====================================================
+        # FETCH DISPATCH
+        # =====================================================
 
         dispatch = get_object_or_404(Dispatch, order_item=item, agent=request.user)
 
-        # ==========================
+        # =====================================================
         # COMMENT VALIDATION
-        # ==========================
+        # =====================================================
 
         if status_value in ["PARTIAL", "RETURNED", "ISSUE"]:
 
-            if not comment:
+            if not comment or not comment.strip():
+
                 return Response(
-                    {"error": "Comment is required for this status"}, status=400
+                    {"error": ("Comment is required for this status")}, status=400
                 )
 
-        # ==========================
+            comment = comment.strip()
+
+        # =====================================================
         # OTP VALIDATION
-        # ==========================
+        # =====================================================
 
         if status_value == "DELIVERED":
 
@@ -3621,9 +4466,9 @@ class UpdateDeliveryStatusView(APIView):
 
                 return Response({"error": "Invalid delivery OTP"}, status=400)
 
-        # ==========================
+        # =====================================================
         # UPDATE DISPATCH
-        # ==========================
+        # =====================================================
 
         dispatch.status = status_value
 
@@ -3631,50 +4476,35 @@ class UpdateDeliveryStatusView(APIView):
 
             dispatch.delivered_at = timezone.now()
 
-        if status_value in ["PARTIAL", "RETURNED", "ISSUE"]:
+        elif status_value in [
+            "PARTIAL",
+            "RETURNED",
+            "ISSUE",
+        ]:
 
             dispatch.issue_reason = comment
 
         dispatch.save()
 
-        # ==========================
-        # UPDATE ITEM STATUS
-        # ==========================
+        # =====================================================
+        # UPDATE ITEM
+        # =====================================================
 
         item.flag = status_value
 
         item.save(update_fields=["flag"])
 
-        # ==========================
-        # CREATE ITEM TRACKING
-        # ==========================
+        # =====================================================
+        # CREATE TRACKING
+        # =====================================================
 
         create_tracking(
             order_item=item, stage=status_value, user=request.user, remark=comment
         )
 
-        # ==========================
+        # =====================================================
         # UPDATE STOP COMPLETION
-        # ==========================
-
-        # for stop in dispatch.stops.all():
-        # update_stop_completion(stop)
-
-        # ==========================
-        # CHECK STOP COMPLETION
-        # ==========================
-
-        # completed_stops = []
-
-        # for stop in dispatch.stops.all():
-
-        # completed = update_stop_completion(stop)
-
-        # if completed:
-        # completed_stops.append(stop.id)
-        # ==========================
-        # UPDATE STOP COMPLETION
-        # ==========================
+        # =====================================================
 
         completed_stops = []
 
@@ -3684,6 +4514,87 @@ class UpdateDeliveryStatusView(APIView):
 
             if completed:
                 completed_stops.append(stop.id)
+
+        # =====================================================
+        # NOTIFICATION CONFIGURATION
+        # =====================================================
+
+        notification_config = {
+            "DELIVERED": {
+                "type": "ORDER_DELIVERED",
+                "subject": "Your Paveway Order Has Been Delivered",
+                "template": "emails/order_status_update.html",
+                "sms": (
+                    f"Your Paveway order {item.order.order_no} has been delivered successfully. "
+                    f"Waybill: {item.waybillNo or item.barcode}."
+                ),
+            },
+            "PARTIAL": {
+                "type": "ORDER_PARTIAL",
+                "subject": "Update on Your Paveway Order",
+                "template": "emails/order_status_update.html",
+                "sms": (
+                    f"Your Paveway order has been partially delivered. "
+                    f"Waybill: {item.waybillNo or item.barcode}. "
+                    f"Comment: {comment}."
+                ),
+            },
+            "RETURNED": {
+                "type": "ORDER_RETURNED",
+                "subject": "Your Paveway Order Has Been Returned",
+                "template": "emails/order_status_update.html",
+                "sms": (
+                    f"Your Paveway order has been returned. "
+                    f"Waybill: {item.waybillNo or item.barcode}. "
+                    f"Reason: {comment}."
+                ),
+            },
+            "ISSUE": {
+                "type": "ORDER_ISSUE",
+                "subject": "Issue With Your Paveway Order",
+                "template": "emails/order_status_update.html",
+                "sms": (
+                    f"There is an issue with your Paveway order. "
+                    f"Waybill: {item.waybillNo or item.barcode}. "
+                    f"Details: {comment}."
+                ),
+            },
+        }
+
+        config = notification_config[status_value]
+
+        # =====================================================
+        # EXTRA NOTIFICATION CONTEXT
+        # =====================================================
+
+        extra_context = {
+            "status": status_value,
+            "comment": comment,
+            "waybill_no": item.waybillNo,
+            "barcode": item.barcode,
+            "agent_name": request.user.fullName,
+            "agent_phone": request.user.mobileNo,
+        }
+
+        # =====================================================
+        # SEND ORDER NOTIFICATION
+        #
+        # send_order_notification() itself uses
+        # transaction.on_commit()
+        # =====================================================
+
+        send_order_notification(
+            notification_type=config["type"],
+            items=[item],
+            email_subject=config["subject"],
+            email_template=config["template"],
+            sms_message=config["sms"],
+            extra_context=extra_context,
+        )
+
+        # =====================================================
+        # RESPONSE
+        # =====================================================
 
         return Response(
             {

@@ -1,5 +1,6 @@
 from datetime import timezone
 from tokenize import TokenError
+from urllib import request
 from django.shortcuts import render
 
 from hmcs.models import AllowanceDeduction
@@ -7,6 +8,8 @@ from .models import (
     Bank,
     ExpenseCategory,
     NigState,
+    NotificationLog,
+    NotificationType,
     User,
     Access,
     Auditlog,
@@ -21,6 +24,8 @@ from .serializers import (
     AllowanceDeductionSerializer,
     BankSerializer,
     ExpenseCategorySerializer,
+    NotificationLogSerializer,
+    NotificationTypeSerializer,
     UserSerializer,
     BackendUserSerializer,
     AuditlogSerializer,
@@ -242,7 +247,12 @@ class GetAllStaff(generics.ListAPIView):
     # queryset = User.objects.filter(userType= 'Staff').all();
     serializer_class = GetStaffList
     permission_classes = [IsAuthenticatedAndStaff]
-    queryset = User.objects.filter(userType="Staff").prefetch_related("access")
+    queryset = (
+        User.objects.filter(userType="Staff")
+        .prefetch_related("access")
+        .order_by("fullName")
+        .all()
+    )
     # queryset = User.objects.filter(userType='Staff').annotate(
     #     first_access=Subquery(
     #         Access.objects.filter(user_id=OuterRef('id')).values('id')[:1]
@@ -308,7 +318,11 @@ class LogoutView(APIView):
 
         # 🔥 2. Fetch session safely
         if session_id:
-            session = UserSession.objects.filter(id=session_id, is_active=True).first()
+            session = (
+                UserSession.objects.filter(id=session_id, is_active=True)
+                .select_related("user")
+                .first()
+            )
 
         # 🔥 3. Close session properly
         if session:
@@ -325,14 +339,38 @@ class LogoutView(APIView):
                 pass
 
         # 🔥 5. Audit log
+        # Auditlog.objects.create(
+        #     user=request.user if request.user.is_authenticated else None,
+        #     action="LOGOUT",
+        #     model="AUTH",
+        #     object_id=str(request.user.id) if request.user.is_authenticated else "0",
+        #     ip_address=get_client_ip(request),
+        #     after={
+        #         "email": request.user.email if request.user.is_authenticated else None,
+        #         "login_time": session.login_time.isoformat() if session else None,
+        #         "logout_time": timezone.now().isoformat(),
+        #         "session_id": str(session.id) if session else None,
+        #         "session_duration_seconds": (
+        #             session.duration_seconds() if session else None
+        #         ),
+        #         "user_agent": request.META.get("HTTP_USER_AGENT"),
+        #     },
+        # )
+        # 🔥 5. Audit log
+        logout_user = (
+            session.user
+            if session
+            else (request.user if request.user.is_authenticated else None)
+        )
+
         Auditlog.objects.create(
-            user=request.user if request.user.is_authenticated else None,
+            user=logout_user,
             action="LOGOUT",
             model="AUTH",
-            object_id=str(request.user.id) if request.user.is_authenticated else "0",
+            object_id=str(logout_user.id) if logout_user else "0",
             ip_address=get_client_ip(request),
             after={
-                "email": request.user.email if request.user.is_authenticated else None,
+                "email": logout_user.email if logout_user else None,
                 "login_time": session.login_time.isoformat() if session else None,
                 "logout_time": timezone.now().isoformat(),
                 "session_id": str(session.id) if session else None,
@@ -342,7 +380,6 @@ class LogoutView(APIView):
                 "user_agent": request.META.get("HTTP_USER_AGENT"),
             },
         )
-
         response = Response({"message": "Logout successful"}, status=200)
 
         response.delete_cookie("access_token")
@@ -473,114 +510,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ----------------- LOGIN -----------------
-# class CustomTokenObtainPairView(TokenObtainPairView):
-#     def post(self, request, *args, **kwargs):
-#         email = request.data.get("email")
-#         password = request.data.get("password")
-#         user = authenticate(request, email=email, password=password)
 
-#         if not user:
-#             Auditlog.objects.create(
-#                     user=None,
-#                     action="LOGIN_FAILED",
-#                     model="AUTH",
-#                     object_id="0",
-#                     ip_address=get_client_ip(request),
-#                     after={
-#                         "email_attempt": email,
-#                         "reason": "Invalid credentials"
-#                     }
-#                 )
-#             return Response({"detail": "Invalid email or password."}, status=status.HTTP_401_UNAUTHORIZED)
-
-#         if not user.is_active:
-#             return Response({"detail": "Account is disabled."}, status=status.HTTP_403_FORBIDDEN)
-
-#         user.last_login = timezone.now()
-#         user.save(update_fields=["last_login"])
-
-#         refresh = RefreshToken.for_user(user)
-#         access_token = str(refresh.access_token)
-#         refresh["session_id"] = str(session.id)
-
-#         passport_url = request.build_absolute_uri(user.passport.url) if user.passport else None
-
-#         response_data = {
-#             "message": "Login Successful",
-#             "user": {
-#                 "id": user.id,
-#                 "fullName": user.fullName,
-#                 "role": user.role,
-#                 "staffNo": user.staffNo,
-#                 "email": user.email,
-#                 "passport": passport_url,
-#                 "username": user.username,
-#             },
-#             "access_token": access_token,
-#             "refresh_token": str(refresh),
-#         }
-
-
-#         response = Response(response_data, status=status.HTTP_200_OK)
-
-
-#         # SET COOKIES
-#         response.set_cookie(
-#             key="access_token",
-#             value=access_token,
-#             httponly=True,
-#             secure=False,#True in production
-#             samesite='Lax',#None in production
-#         )
-#         response.set_cookie(
-#             key="refresh_token",
-#             value=str(refresh),
-#             httponly=True,
-#             secure=False,
-#             samesite='Lax',
-#         )
-#         response.set_cookie(
-#             key="csrftoken",
-#             value=get_token(request),
-#             httponly=False,
-#             secure=False,
-#             samesite='Lax',
-#         )
-#         Auditlog.objects.create(
-#             user=user,
-#             action="LOGIN",
-#             model="AUTH",
-#             object_id=str(user.id),
-#             ip_address=get_client_ip(request),
-#             after={
-#                 "email": user.email,
-#                 "login_time": timezone.now().isoformat(),
-#                 "user_agent": request.META.get("HTTP_USER_AGENT"),
-#                 "session_id": str(session.id),
-#             }
-#         )
-#         session = UserSession.objects.create(
-#             user=user,
-#             ip_address=get_client_ip(request),
-#             user_agent=request.META.get("HTTP_USER_AGENT")
-#         )
-#         return response
 class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         email = request.data.get("email")
         password = request.data.get("password")
 
+        audit_user = User.objects.filter(email__iexact=email).first()
         user = authenticate(request, email=email, password=password)
 
         if not user:
             Auditlog.objects.create(
-                user=None,
+                user=audit_user,
                 action="LOGIN_FAILED",
                 model="AUTH",
-                object_id="0",
+                object_id=str(audit_user.pk) if audit_user else "0",
                 ip_address=get_client_ip(request),
-                after={"email_attempt": email, "reason": "Invalid credentials"},
+                after={
+                    "email_attempt": email,
+                    "account_exists": audit_user is not None,
+                    "reason": "Invalid credentials",
+                },
             )
             return Response(
                 {"detail": "Invalid email or password."},
@@ -696,36 +646,35 @@ class CustomTokenRefreshView(TokenRefreshView):
         return response
 
 
-from rest_framework_simplejwt.views import TokenRefreshView
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.response import Response
+# from rest_framework_simplejwt.views import TokenRefreshView
+# from rest_framework_simplejwt.tokens import RefreshToken
+# from rest_framework.response import Response
 
-
-class CookieTokenRefreshView(TokenRefreshView):
-    def post(self, request, *args, **kwargs):
-        response = super().post(request, *args, **kwargs)
-        # Set new cookies
-        if "access" in response.data:
-            response.set_cookie(
-                "access_token",
-                response.data["access"],
-                httponly=True,
-                samesite="None",
-                secure=True,
-                path="/",
-            )
-        if "refresh" in response.data:
-            response.set_cookie(
-                "refresh_token",
-                response.data["refresh"],
-                httponly=True,
-                samesite="None",
-                secure=True,
-                path="/",
-            )
-        response.data.pop("access", None)
-        response.data.pop("refresh", None)
-        return response
+# class CookieTokenRefreshView(TokenRefreshView):
+#     def post(self, request, *args, **kwargs):
+#         response = super().post(request, *args, **kwargs)
+#         # Set new cookies
+#         if "access" in response.data:
+#             response.set_cookie(
+#                 "access_token",
+#                 response.data["access"],
+#                 httponly=True,
+#                 samesite="None",
+#                 secure=True,
+#                 path="/",
+#             )
+#         if "refresh" in response.data:
+#             response.set_cookie(
+#                 "refresh_token",
+#                 response.data["refresh"],
+#                 httponly=True,
+#                 samesite="None",
+#                 secure=True,
+#                 path="/",
+#             )
+#         response.data.pop("access", None)
+#         response.data.pop("refresh", None)
+#         return response
 
 
 # ----------------- VALIDATE -----------------
@@ -801,8 +750,9 @@ def getUserInfo(request, id):
         return Response(status=status.HTTP_401_UNAUTHORIZED)
 
 
-class ChangePasswordView(APIView):
+class ChangePasswordView(AuditedModelViewSet):
     permission_classes = [IsAuthenticated]
+    queryset = User.objects.all().order_by("fullName")
 
     def post(self, request, *args, **kwargs):
         serializer = ChangePasswordSerializer(
@@ -810,7 +760,7 @@ class ChangePasswordView(APIView):
         )
         if serializer.is_valid():
             serializer.save()
-            log_user_activity(self.request, f"Password Reset done")
+            # log_user_activity(self.request, f"Password Reset done")
             return Response(
                 {"detail": "Password updated successfully"}, status=status.HTTP_200_OK
             )
@@ -1164,3 +1114,138 @@ class PricingViewSet(AuditedModelViewSet):
         Pricing.objects.bulk_create(objs)
 
         return Response({"detail": "Uploaded successfully"})
+
+
+# views.py
+
+from django.contrib.auth import get_user_model
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAdminUser
+
+from .serializers import ResetUserPasswordSerializer
+
+User = get_user_model()
+
+
+class ResetUserPasswordView(AuditedModelViewSet):
+    permission_classes = [IsAdminUser]
+    queryset = User.objects.all().order_by("fullName")
+
+    def post(self, request):
+        serializer = ResetUserPasswordSerializer(data=request.data)
+
+        if serializer.is_valid():
+            user = serializer.validated_data["user"]
+            new_password = serializer.validated_data["new_password"]
+
+            before = {"password": "***hidden***"}
+
+            user.set_password(new_password)
+            user.save()
+
+            # after = {"password": "***changed***"}
+            after = {
+                "target_user": {
+                    "id": user.id,
+                    "name": user.fullName,
+                    "login": user.username,
+                },
+                "password": "***changed***",
+            }
+
+            self.log_action(
+                request=request,
+                action="PASSWORD_RESET",
+                instance=user,
+                before=before,
+                after=after,
+                changes={
+                    "password": {
+                        "from": "***hidden***",
+                        "to": "***changed***",
+                    }
+                },
+            )
+
+            return Response(
+                {"message": "Password reset successfully."},
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# views.py
+
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAdminUser
+from rest_framework.response import Response
+from rest_framework import status
+
+from .models import NotificationConfig
+from .serializers import NotificationConfigSerializer
+
+
+class NotificationConfigView(APIView):
+
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+
+        config = NotificationConfig.objects.filter(is_active=True).first()
+
+        if not config:
+            config = NotificationConfig.objects.create(channel="EMAIL", is_active=True)
+
+        serializer = NotificationConfigSerializer(config)
+
+        return Response(serializer.data)
+
+    def patch(self, request):
+
+        config = NotificationConfig.objects.filter(is_active=True).first()
+
+        if not config:
+            config = NotificationConfig.objects.create(channel="EMAIL")
+
+        serializer = NotificationConfigSerializer(
+            config, data=request.data, partial=True
+        )
+
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(serializer.data)
+
+
+from rest_framework.permissions import IsAdminUser
+from rest_framework.viewsets import ModelViewSet
+
+
+from rest_framework.viewsets import ModelViewSet
+
+
+class NotificationTypeViewSet(AuditedModelViewSet):
+
+    queryset = NotificationType.objects.all()
+
+    serializer_class = NotificationTypeSerializer
+
+    permission_classes = [IsAdminUser]
+
+    http_method_names = [
+        "get",
+        "patch",
+        "head",
+        "options",
+    ]
+
+
+class NotificationLogListView(generics.ListAPIView):
+    permission_classes = [IsAdminUser]
+
+    serializer_class = NotificationLogSerializer
+
+    queryset = NotificationLog.objects.all().order_by("-created_at")

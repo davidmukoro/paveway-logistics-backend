@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Order Created</title>
+  </head>
+
+  <body>
+    <h2>Your Order Has Been Created</h2>
+
+    <p> Dear {{ receiver }}, </p>
+
+    <p> Your order has been successfully created with Paveway Logistics. </p>
+
+    <p>
+      <strong>Order Number:</strong>
+      {{ order_no }}
+    </p>
+
+    <p>
+      <strong>Vendor Order Number:</strong>
+      {{ vendor_order_no }}
+    </p>
+
+    <p> We will keep you updated as your shipment progresses. </p>
+
+    <h3>Items</h3>
+
+    <ul>
+      {% for item in items %}
+      <li> {{ item.barcode }} </li>
+      {% endfor %}
+    </ul>
+
+    <p> Thank you for using Paveway Logistics. </p>
+  </body>
+</html>

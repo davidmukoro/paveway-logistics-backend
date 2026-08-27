@@ -1,0 +1,151 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Order Status Update</title>
+
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: #f5f7fa;
+        margin: 0;
+        padding: 0;
+      }
+
+      .container {
+        max-width: 650px;
+        margin: 30px auto;
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 30px;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 25px;
+      }
+
+      .header h2 {
+        margin: 0;
+      }
+
+      .content {
+        color: #333333;
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      .status {
+        padding: 15px;
+        margin: 20px 0;
+        background: #f1f5f9;
+        border-radius: 6px;
+        text-align: center;
+        font-size: 18px;
+        font-weight: bold;
+      }
+
+      .details {
+        margin-top: 20px;
+      }
+
+      .details table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      .details td {
+        padding: 10px;
+        border-bottom: 1px solid #eeeeee;
+      }
+
+      .details td:first-child {
+        font-weight: bold;
+        width: 35%;
+      }
+
+      .comment {
+        margin-top: 20px;
+        padding: 15px;
+        background: #fff7ed;
+        border-radius: 6px;
+      }
+
+      .footer {
+        margin-top: 30px;
+        text-align: center;
+        font-size: 12px;
+        color: #777777;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="header">
+        <h2>Paveway Logistics</h2>
+      </div>
+
+      <div class="content">
+        <p>Dear {{ receiver }},</p>
+
+        <p>
+          There has been an update to your Paveway order. Please see the details
+          below.
+        </p>
+
+        <div class="status"> {{ status }} </div>
+
+        <div class="details">
+          <table>
+            <tr>
+              <td>Order No.</td>
+              <td>{{ order_no }}</td>
+            </tr>
+
+            <tr>
+              <td>Vendor Order No.</td>
+              <td>{{ vendor_order_no }}</td>
+            </tr>
+
+            <tr>
+              <td>Waybill No.</td>
+              <td>{{ waybill_no|default:barcode }}</td>
+            </tr>
+
+            <tr>
+              <td>Barcode</td>
+              <td>{{ barcode }}</td>
+            </tr>
+
+            <tr>
+              <td>Driver</td>
+              <td>{{ agent_name|default:"N/A" }}</td>
+            </tr>
+
+            <tr>
+              <td>Driver Phone</td>
+              <td>{{ agent_phone|default:"N/A" }}</td>
+            </tr>
+          </table>
+        </div>
+
+        {% if comment %}
+        <div class="comment">
+          <strong>Delivery Comment:</strong>
+          <br />
+
+          {{ comment }}
+        </div>
+        {% endif %}
+
+        <p> Thank you for using Paveway Logistics. </p>
+      </div>
+
+      <div class="footer">
+        © {{ year }} Paveway Logistics. This is an automated notification.
+        Please do not reply.
+      </div>
+    </div>
+  </body>
+</html>

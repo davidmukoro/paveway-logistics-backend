@@ -6,9 +6,13 @@ from .views import (
     ChangePasswordView,
     CreateUserView,
     LgaViewSet,
+    NotificationConfigView,
+    NotificationLogListView,
+    NotificationTypeViewSet,
     PasswordResetRequestView,
     PasswordResetView,
     PayGateway,
+    ResetUserPasswordView,
     StateViewSet,
     TerminateSessionView,
     UpdateProfileView,
@@ -46,6 +50,9 @@ router.register(r"allowance-deductions", AllowanceDeductionViewSet)
 router.register(r"audit-logs", AuditLogViewSet, basename="audit-logs")
 router.register(r"pricing-template", PricingViewSet)
 router.register(r"staff", StaffView, basename="staff")
+router.register(
+    r"notifications/types", NotificationTypeViewSet, basename="notification-type"
+)
 # router.register(r'users', UserViewSet)
 # router.register(r'staff-profiles', StaffProfileViewSet)
 # router.register(r'departments', DepartmentViewSet)
@@ -59,7 +66,11 @@ urlpatterns = router.urls + [
     path("registerStaff/", BackendUserView.as_view(), name="registerStaff"),
     path("registerStaff/<str:id>/", UpdateStaffView.as_view(), name="updateStaff"),
     path("api/profile/update/", UpdateProfileView.as_view(), name="update_profile"),
-    path("change-password/", ChangePasswordView.as_view(), name="change_password"),
+    path(
+        "change-password/",
+        ChangePasswordView.as_view({"get": "list"}),
+        name="change_password",
+    ),
     path("staff-list/", GetAllStaff.as_view(), name="staff-list"),
     path("customers-list/", GetAllCustomer.as_view(), name="customer-list"),
     path("my-profile/<uuid:id>/", views.getUserInfo, name="user-profile"),
@@ -84,5 +95,21 @@ urlpatterns = router.urls + [
     path("getUserPermission/<str:id>/", views.getUserPermission, name="get-permission"),
     path("sessions/active/", ActiveUserSessionsView.as_view(), name="active-sessions"),
     path("sessions/<str:id>/terminate/", TerminateSessionView.as_view()),
+    path(
+        "users/reset-password/",
+        ResetUserPasswordView.as_view({"get": "list"}),
+        name="reset-user-password",
+    ),
+    # urls.py
+    path(
+        "notifications/config/",
+        NotificationConfigView.as_view(),
+        name="notification-config",
+    ),
+    path(
+        "notifications/logs/",
+        NotificationLogListView.as_view(),
+        name="notification-log-list",
+    ),
     # path("audit-log/",audit_report,name="audit-log")
 ]

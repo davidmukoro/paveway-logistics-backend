@@ -1,4 +1,6 @@
 # utils.py
+from urllib import request
+
 from django.utils import timezone
 from .models import Codesec
 from .models import Auditlog
@@ -154,24 +156,48 @@ class AuditedModelViewSet(viewsets.ModelViewSet):
 
         return value
 
+    # def serialize_instance(self, instance):
+    #     data = {}
+
+    #     for field in instance._meta.fields:
+    #         value = getattr(instance, field.name)
+
+    #         # 🔥 ForeignKey handling (safe)
+    #         if field.is_relation:
+    #             if value is None:
+    #                 data[field.name] = None
+    #             else:
+    #                 data[field.name] = {
+    #                     "id": str(getattr(value, "id", None)),
+    #                     "label": str(value),
+    #                 }
+
+    #         # 🔥 IMPORTANT: run safe_json for ALL remaining cases
+    #         else:
+    #             data[field.name] = self.safe_json(value)
+
+    #     return data
     def serialize_instance(self, instance):
         data = {}
 
         for field in instance._meta.fields:
-            value = getattr(instance, field.name)
 
-            # 🔥 ForeignKey handling (safe)
+            # ForeignKey
             if field.is_relation:
-                if value is None:
+                related_id = getattr(instance, field.attname)
+
+                if related_id is None:
                     data[field.name] = None
                 else:
+                    related_object = getattr(instance, field.name, None)
+
                     data[field.name] = {
-                        "id": str(getattr(value, "id", None)),
-                        "label": str(value),
+                        "id": str(related_id),
+                        "label": str(related_object) if related_object else None,
                     }
 
-            # 🔥 IMPORTANT: run safe_json for ALL remaining cases
             else:
+                value = getattr(instance, field.name)
                 data[field.name] = self.safe_json(value)
 
         return data
@@ -183,15 +209,32 @@ class AuditedModelViewSet(viewsets.ModelViewSet):
                 changes[key] = {"from": old.get(key), "to": new.get(key)}
         return changes
 
+    # def create(self, request, *args, **kwargs):
+    #     response = super().create(request, *args, **kwargs)
+
+    #     Auditlog.objects.create(
+    #         user=request.user,
+    #         action="CREATE",
+    #         model=self.get_model_label(),
+    #         object_id=str(response.data.get("id")),
+    #         after=self.safe_json(response.data),
+    #         ip_address=get_client_ip(request),
+    #     )
+
+    #     return response
     def create(self, request, *args, **kwargs):
         response = super().create(request, *args, **kwargs)
+
+        object_id = response.data.get("id")
+
+        instance = self.queryset.model.objects.get(pk=object_id)
 
         Auditlog.objects.create(
             user=request.user,
             action="CREATE",
             model=self.get_model_label(),
-            object_id=str(response.data.get("id")),
-            after=self.safe_json(response.data),
+            object_id=str(instance.pk),
+            after=self.serialize_instance(instance),
             ip_address=get_client_ip(request),
         )
 
@@ -262,75 +305,22 @@ class AuditedModelViewSet(viewsets.ModelViewSet):
 
         return response
 
-
-# class AuditedModelViewSet(viewsets.ModelViewSet):
-#     """
-#     Base ViewSet that automatically logs user activity
-#     for create, update, delete, and retrieve actions.
-#     """
-#     log_create = True
-#     log_update = True
-#     log_delete = True
-#     log_retrieve = False
-
-#     model_label = None
-
-#     def get_model_label(self):
-#         if self.model_label:
-#             return self.model_label
-#         return self.queryset.model.__name__ if hasattr(self, "queryset") else "Object"
-
-#     def create(self, request, *args, **kwargs):
-#         response = super().create(request, *args, **kwargs)
-#         if self.log_create:
-#             log_user_activity(
-#                 request,
-#                 f"Created {self.get_model_label()}: {response.data.get('name', '') or response.data.get('id', '')}"
-#             )
-#         return response
-
-#     def update(self, request, *args, **kwargs):
-#         """Handles PUT (full update)"""
-#         instance = self.get_object()
-#         response = super().update(request, *args, **kwargs)
-#         if self.log_update:
-#             log_user_activity(
-#                 request,
-#                 f"Fully updated {self.get_model_label()} '{instance}' (ID: {instance.id})"
-#             )
-#         return response
-
-#     def partial_update(self, request, *args, **kwargs):
-#         """Handles PATCH (partial update)"""
-#         instance = self.get_object()
-#         response = super().partial_update(request, *args, **kwargs)
-#         if self.log_update:
-#             updated_fields = list(request.data.keys())
-#             log_user_activity(
-#                 request,
-#                 f"Partially updated {self.get_model_label()} '{instance}' "
-#                 f"(ID: {instance.id}) | Fields: {updated_fields}"
-#             )
-#         return response
-
-#     def destroy(self, request, *args, **kwargs):
-#         instance = self.get_object()
-#         name = str(instance)
-#         instance_id = instance.id
-#         response = super().destroy(request, *args, **kwargs)
-#         if self.log_delete:
-#             log_user_activity(
-#                 request,
-#                 f"Deleted {self.get_model_label()} '{name}' (ID: {instance_id})"
-#             )
-#         return response
-
-#     def retrieve(self, request, *args, **kwargs):
-#         instance = self.get_object()
-#         response = super().retrieve(request, *args, **kwargs)
-#         if self.log_retrieve:
-#             log_user_activity(
-#                 request,
-#                 f"Viewed {self.get_model_label()} '{instance}' (ID: {instance.id})"
-#             )
-#         return response
+    def log_action(
+        self,
+        request,
+        action,
+        instance,
+        before=None,
+        after=None,
+        changes=None,
+    ):
+        Auditlog.objects.create(
+            user=request.user,
+            action=action,
+            model=instance.__class__.__name__,
+            object_id=str(instance.pk),
+            before=self.safe_json(before),
+            after=self.safe_json(after),
+            changes=self.safe_json(changes),
+            ip_address=get_client_ip(request),
+        )

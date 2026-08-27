@@ -10,6 +10,8 @@ from .models import (
     Bank,
     ExpenseCategory,
     NigState,
+    NotificationConfig,
+    NotificationType,
     PayIntegration,
     UserSession,
     Zone,
@@ -972,3 +974,108 @@ class PricingSerializer(serializers.ModelSerializer):
             "updatedAt": {"required": False},
             "updatedBy": {"required": False},
         }
+
+
+# serializers.py
+
+from rest_framework import serializers
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
+
+
+class ResetUserPasswordSerializer(serializers.Serializer):
+    user = serializers.CharField()
+    new_password = serializers.CharField(
+        write_only=True, style={"input_type": "password"}
+    )
+
+    def validate_user(self, value):
+        try:
+            return User.objects.get(id=value)
+        except User.DoesNotExist:
+            raise serializers.ValidationError("User does not exist.")
+
+
+# serializers.py
+class NotificationConfigSerializer(serializers.ModelSerializer):
+
+    channel_display = serializers.CharField(
+        source="get_channel_display", read_only=True
+    )
+
+    class Meta:
+        model = NotificationConfig
+        fields = [
+            "id",
+            "channel",
+            "channel_display",
+            "is_active",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "channel_display",
+            "updated_at",
+        ]
+
+
+class NotificationTypeSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = NotificationType
+        fields = [
+            "id",
+            "code",
+            "name",
+            "description",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "code",
+            "created_at",
+            "updated_at",
+        ]
+
+
+# setup/notifications/serializers.py
+
+from rest_framework import serializers
+from setup.models import NotificationLog
+
+
+class NotificationLogSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(
+        source="get_status_display",
+        read_only=True,
+    )
+
+    channel_display = serializers.CharField(
+        source="get_channel_display",
+        read_only=True,
+    )
+
+    class Meta:
+        model = NotificationLog
+        fields = [
+            "id",
+            "customer",
+            "notification_type",
+            "channel",
+            "channel_display",
+            "recipient",
+            "subject",
+            "message",
+            "status",
+            "status_display",
+            "provider",
+            "provider_message_id",
+            "error_message",
+            "sent_at",
+            "delivered_at",
+            "created_at",
+        ]

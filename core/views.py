@@ -1187,20 +1187,21 @@ class DashboardViewSet(AuditedModelViewSet):
     @action(detail=False, methods=["get"], url_path="top-destination-lga")
     def top_destination_lga(self, request):
 
-        queryset = OrderItem.objects.select_related("lga", "order")
+        queryset = OrderItem.objects.select_related("order__lga")
 
         # -----------------------------
         # CUSTOMER FILTER
         # -----------------------------
         if request.user.userType == "Customer":
             queryset = queryset.filter(order__vendor_id=request.user.id)
-            total_all = queryset.count()
+
+        total_all = queryset.count()
 
         # -----------------------------
         # GROUP BY LGA
         # -----------------------------
         top_lgas = (
-            queryset.values("lga__name")  # adjust if your field differs
+            queryset.values("order__lga__name")
             .annotate(total=Count("id"))
             .order_by("-total")[:5]
         )
@@ -1208,11 +1209,17 @@ class DashboardViewSet(AuditedModelViewSet):
         result = []
 
         for row in top_lgas:
+
+            percentage = 0
+
+            if total_all > 0:
+                percentage = round((row["total"] / total_all) * 100, 1)
+
             result.append(
                 {
-                    "name": row["lga__name"] or "Unknown",
+                    "name": row["order__lga__name"] or "Unknown",
                     "value": row["total"],
-                    "percentage": round((row["total"] / total_all) * 100, 1),
+                    "percentage": percentage,
                 }
             )
 

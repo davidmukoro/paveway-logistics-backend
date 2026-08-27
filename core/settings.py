@@ -197,3 +197,8 @@ EMAIL_HOST_PASSWORD = "djwy mgbe aayh waqc"
 EMAIL_USE_TLS = True
 EMAIL_USER_SSL = False
 DEFAULT_FROM_EMAIL = "Paveway Logistics<eplatformapp@gmail.com>"
+
+
+XWIRELESS_API_KEY = os.getenv("XWIRELESS_API_KEY")
+XWIRELESS_CLIENT_ID = os.getenv("XWIRELESS_CLIENT_ID")
+XWIRELESS_SENDER_ID = os.getenv("XWIRELESS_SENDER_ID")

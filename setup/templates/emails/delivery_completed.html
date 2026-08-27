@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Delivery Completed</title>
+  </head>
+
+  <body>
+    <h2>Delivery Completed</h2>
+
+    <p>Dear {{ receiver }},</p>
+
+    <p> Your Paveway order has been successfully delivered. </p>
+
+    <p>
+      <strong>Order No:</strong> {{ order_no }}<br />
+      <strong>Vendor Order No:</strong> {{ vendor_order_no }}
+    </p>
+
+    <h3>Delivered Items</h3>
+
+    {% for item in items %}
+    <p>
+      <strong>Waybill:</strong>
+      {% if item.waybillNo %} {{ item.waybillNo }} {% else %} {{ item.barcode }}
+      {% endif %}
+      <br />
+
+      <strong>Barcode:</strong> {{ item.barcode }}
+    </p>
+    {% endfor %}
+
+    <p> Thank you for using Paveway Logistics. </p>
+  </body>
+</html>
