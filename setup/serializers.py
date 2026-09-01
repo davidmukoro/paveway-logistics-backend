@@ -1,5 +1,6 @@
 import json
 
+import attrs
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 
@@ -11,6 +12,7 @@ from .models import (
     ExpenseCategory,
     NigState,
     NotificationConfig,
+    NotificationTemplate,
     NotificationType,
     PayIntegration,
     UserSession,
@@ -1079,3 +1081,74 @@ class NotificationLogSerializer(serializers.ModelSerializer):
             "delivered_at",
             "created_at",
         ]
+
+
+class NotificationTemplateSerializer(serializers.ModelSerializer):
+
+    notification_type_name = serializers.CharField(
+        source="notification_type.name",
+        read_only=True,
+    )
+
+    notification_type_code = serializers.CharField(
+        source="notification_type.code",
+        read_only=True,
+    )
+
+    channel_display = serializers.CharField(
+        source="get_channel_display",
+        read_only=True,
+    )
+
+    class Meta:
+        model = NotificationTemplate
+        fields = [
+            "id",
+            "notification_type",
+            "notification_type_name",
+            "notification_type_code",
+            "channel",
+            "channel_display",
+            "subject",
+            "body",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "notification_type_name",
+            "notification_type_code",
+            "channel_display",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate(self, attrs):
+
+        channel = attrs.get(
+            "channel",
+            getattr(self.instance, "channel", None),
+        )
+
+        subject = attrs.get(
+            "subject",
+            getattr(self.instance, "subject", ""),
+        )
+
+        body = attrs.get(
+            "body",
+            getattr(self.instance, "body", ""),
+        )
+
+        if not body or not body.strip():
+            raise serializers.ValidationError({"body": "Template body is required."})
+
+        if channel == "EMAIL" and not subject.strip():
+            raise serializers.ValidationError({"subject": "Email subject is required."})
+
+        if channel == "SMS":
+            attrs["subject"] = ""
+
+        return attrs

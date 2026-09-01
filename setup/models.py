@@ -264,17 +264,32 @@ class Auditlog(models.Model):
 
 
 class UserSession(models.Model):
+    # user = models.ForeignKey("setup.User", on_delete=models.CASCADE)
+    # login_time = models.DateTimeField(auto_now_add=True)
+    # logout_time = models.DateTimeField(null=True, blank=True)
+    # ip_address = models.GenericIPAddressField(null=True, blank=True)
+    # user_agent = models.TextField(null=True, blank=True)
+    # is_active = models.BooleanField(default=True)
+
+    # def duration_seconds(self):
+    #     if self.logout_time:
+    #         return (self.logout_time - self.login_time).total_seconds()
+    #     return None
     user = models.ForeignKey("setup.User", on_delete=models.CASCADE)
+
     login_time = models.DateTimeField(auto_now_add=True)
     logout_time = models.DateTimeField(null=True, blank=True)
+
+    expires_at = models.DateTimeField()
+
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.TextField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
 
     def duration_seconds(self):
-        if self.logout_time:
-            return (self.logout_time - self.login_time).total_seconds()
-        return None
+        end_time = self.logout_time or timezone.now()
+
+        return (end_time - self.login_time).total_seconds()
 
 
 class ExpenseCategory(models.Model):

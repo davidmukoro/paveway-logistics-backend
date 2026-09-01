@@ -3,16 +3,20 @@ from . import views
 from .views import (
     ActiveUserSessionsView,
     BackendUserView,
+    CampaignNotificationView,
     ChangePasswordView,
     CreateUserView,
+    GeneralNotificationView,
     LgaViewSet,
     NotificationConfigView,
     NotificationLogListView,
+    NotificationTemplateViewSet,
     NotificationTypeViewSet,
     PasswordResetRequestView,
     PasswordResetView,
     PayGateway,
     ResetUserPasswordView,
+    SendGeneralNotificationView,
     StateViewSet,
     TerminateSessionView,
     UpdateProfileView,
@@ -52,6 +56,11 @@ router.register(r"pricing-template", PricingViewSet)
 router.register(r"staff", StaffView, basename="staff")
 router.register(
     r"notifications/types", NotificationTypeViewSet, basename="notification-type"
+)
+router.register(
+    r"notifications/templates",
+    NotificationTemplateViewSet,
+    basename="notification-template",
 )
 # router.register(r'users', UserViewSet)
 # router.register(r'staff-profiles', StaffProfileViewSet)
@@ -110,6 +119,21 @@ urlpatterns = router.urls + [
         "notifications/logs/",
         NotificationLogListView.as_view(),
         name="notification-log-list",
+    ),
+    path(
+        "general/",
+        GeneralNotificationView.as_view(),
+        name="general-notification",
+    ),
+    path(
+        "campaign/",
+        CampaignNotificationView.as_view(),
+        name="campaign-notification",
+    ),
+    path(
+        "notifications/send/",
+        SendGeneralNotificationView.as_view(),
+        name="send-general-notification",
     ),
     # path("audit-log/",audit_report,name="audit-log")
 ]

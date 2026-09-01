@@ -3,12 +3,18 @@ from tokenize import TokenError
 from urllib import request
 from django.shortcuts import render
 
+from .notifications.service import (
+    send_notification,
+    get_notification_recipients,
+    send_bulk_notification,
+)
 from hmcs.models import AllowanceDeduction
 from .models import (
     Bank,
     ExpenseCategory,
     NigState,
     NotificationLog,
+    NotificationTemplate,
     NotificationType,
     User,
     Access,
@@ -25,6 +31,7 @@ from .serializers import (
     BankSerializer,
     ExpenseCategorySerializer,
     NotificationLogSerializer,
+    NotificationTemplateSerializer,
     NotificationTypeSerializer,
     UserSerializer,
     BackendUserSerializer,
@@ -510,6 +517,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from datetime import timedelta
+
+
+def get_session_duration(user):
+    if user.role == User.DISPATCHER:
+        return timedelta(hours=12)
+
+    return timedelta(hours=2)
+
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
@@ -546,18 +562,42 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         user.save(update_fields=["last_login"])
 
         # 🔥 STEP 1: CREATE SESSION FIRST
+        # session = UserSession.objects.create(
+        #     user=user,
+        #     ip_address=get_client_ip(request),
+        #     user_agent=request.META.get("HTTP_USER_AGENT"),
+        # )
+
+        # # 🔥 STEP 2: CREATE TOKENS
+        # refresh = RefreshToken.for_user(user)
+        # # attach session_id AFTER session exists
+        # refresh["session_id"] = str(session.id)
+
+        # access_token = str(refresh.access_token)
+
+        session_duration = get_session_duration(user)
+        session_expires_at = timezone.now() + session_duration
+
         session = UserSession.objects.create(
             user=user,
             ip_address=get_client_ip(request),
             user_agent=request.META.get("HTTP_USER_AGENT"),
+            expires_at=session_expires_at,
         )
 
-        # 🔥 STEP 2: CREATE TOKENS
         refresh = RefreshToken.for_user(user)
-        # attach session_id AFTER session exists
         refresh["session_id"] = str(session.id)
 
-        access_token = str(refresh.access_token)
+        # Create access token
+        access_token_token = refresh.access_token
+
+        # Make the access token expire at the session expiry
+        access_token_token.set_exp(
+            from_time=timezone.now(),
+            lifetime=session_duration,
+        )
+
+        access_token = str(access_token_token)
 
         passport_url = (
             request.build_absolute_uri(user.passport.url) if user.passport else None
@@ -590,9 +630,11 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 "passport": passport_url,
                 "username": user.username,
                 "hub_name": user.hub_name_id,
+                "session_expires_at": session.expires_at.isoformat(),
             },
             "access_token": access_token,
             "refresh_token": str(refresh),
+            "session_expires_at": session.expires_at.isoformat(),
         }
 
         response = Response(response_data, status=status.HTTP_200_OK)
@@ -625,25 +667,317 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 
 
 # ----------------- REFRESH -----------------
-class CustomTokenRefreshView(TokenRefreshView):
-    def post(self, request, *args, **kwargs):
-        refresh_token = request.COOKIES.get("refresh_token")
-        if not refresh_token:
-            return Response({"detail": "Refresh token missing"}, status=401)
+# class CustomTokenRefreshView(TokenRefreshView):
+#     def post(self, request, *args, **kwargs):
+#         refresh_token = request.COOKIES.get("refresh_token")
+#         if not refresh_token:
+#             return Response({"detail": "Refresh token missing"}, status=401)
 
+#         serializer = self.get_serializer(data={"refresh": refresh_token})
+#         serializer.is_valid(raise_exception=True)
+#         access_token = serializer.validated_data["access"]
+
+
+#         response = Response({"message": "Token refreshed"})
+#         response.set_cookie(
+#             key="access_token",
+#             value=access_token,
+#             httponly=True,
+#             secure=False,
+#             samesite="Lax",
+#         )
+#         return response
+class CustomTokenRefreshView(TokenRefreshView):
+
+    def post(self, request, *args, **kwargs):
+
+        refresh_token = request.COOKIES.get("refresh_token")
+
+        if not refresh_token:
+            return Response(
+                {"detail": "Refresh token missing"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # -----------------------------------------
+        # 1. Decode refresh token
+        # -----------------------------------------
+        try:
+            refresh = RefreshToken(refresh_token)
+
+            session_id = refresh.get("session_id")
+
+            if not session_id:
+                return Response(
+                    {"detail": "Session information missing"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+        except TokenError:
+            return Response(
+                {"detail": "Invalid or expired refresh token"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # -----------------------------------------
+        # 2. Find active session
+        # -----------------------------------------
+        session = (
+            UserSession.objects.select_related("user")
+            .filter(
+                id=session_id,
+                is_active=True,
+            )
+            .first()
+        )
+
+        if not session:
+            return Response(
+                {"detail": "Session expired or logged out"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        user = session.user
+
+        # -----------------------------------------
+        # 3. Check current session expiry
+        # -----------------------------------------
+        now = timezone.now()
+
+        if session.expires_at <= now:
+
+            session.is_active = False
+            session.logout_time = now
+
+            session.save(
+                update_fields=[
+                    "is_active",
+                    "logout_time",
+                ]
+            )
+
+            return Response(
+                {"detail": "Session expired"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # -----------------------------------------
+        # 4. EXTEND SESSION
+        #
+        # Dispatcher  -> 12 hours
+        # Others      -> 2 hours
+        # -----------------------------------------
+        session_duration = get_session_duration(user)
+
+        session.expires_at = now + session_duration
+
+        session.save(update_fields=["expires_at"])
+
+        # -----------------------------------------
+        # 5. Refresh JWT
+        # -----------------------------------------
         serializer = self.get_serializer(data={"refresh": refresh_token})
+
         serializer.is_valid(raise_exception=True)
+
         access_token = serializer.validated_data["access"]
 
-        response = Response({"message": "Token refreshed"})
+        # -----------------------------------------
+        # 6. Get rotated refresh token
+        # -----------------------------------------
+        new_refresh_token = serializer.validated_data.get("refresh")
+
+        # -----------------------------------------
+        # 7. Make access token expire with session
+        # -----------------------------------------
+        access_token_token = AccessToken(access_token)
+
+        access_token_token.set_exp(
+            from_time=now,
+            lifetime=session_duration,
+        )
+
+        access_token = str(access_token_token)
+
+        # -----------------------------------------
+        # 8. Response
+        # -----------------------------------------
+        response = Response(
+            {
+                "message": "Token refreshed",
+                "session_expires_at": session.expires_at.isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+        # -----------------------------------------
+        # 9. Access token cookie
+        # -----------------------------------------
         response.set_cookie(
             key="access_token",
             value=access_token,
             httponly=True,
-            secure=False,
+            secure=False,  # True in production
             samesite="Lax",
         )
+
+        # -----------------------------------------
+        # 10. Rotated refresh token cookie
+        # -----------------------------------------
+        if new_refresh_token:
+            response.set_cookie(
+                key="refresh_token",
+                value=new_refresh_token,
+                httponly=True,
+                secure=False,  # True in production
+                samesite="Lax",
+            )
+
         return response
+
+
+# from rest_framework_simplejwt.views import TokenRefreshView
+# from rest_framework_simplejwt.tokens import RefreshToken
+# from rest_framework.response import Response
+# from rest_framework import status
+
+# from setup.models import UserSession
+
+
+# class CustomTokenRefreshView(TokenRefreshView):
+
+#     def post(self, request, *args, **kwargs):
+
+#         # -----------------------------------------
+#         # 1. Get refresh token from cookie
+#         # -----------------------------------------
+
+#         refresh_token = request.COOKIES.get("refresh_token")
+
+#         if not refresh_token:
+#             return Response(
+#                 {"detail": "Refresh token missing"},
+#                 status=status.HTTP_401_UNAUTHORIZED,
+#             )
+
+#         # -----------------------------------------
+#         # 2. Validate refresh token
+#         # -----------------------------------------
+
+#         try:
+#             refresh = RefreshToken(refresh_token)
+
+#             # -----------------------------------------
+#             # 3. Get session ID from refresh token
+#             # -----------------------------------------
+
+#             session_id = refresh.get("session_id")
+
+#             if not session_id:
+#                 return Response(
+#                     {"detail": "Session information missing"},
+#                     status=status.HTTP_401_UNAUTHORIZED,
+#                 )
+
+#             # -----------------------------------------
+#             # 4. Get active UserSession
+#             # -----------------------------------------
+
+#             session = (
+#                 UserSession.objects.select_related("user")
+#                 .filter(
+#                     id=session_id,
+#                     is_active=True,
+#                 )
+#                 .first()
+#             )
+
+#             if not session:
+#                 return Response(
+#                     {"detail": "Session expired or logged out"},
+#                     status=status.HTTP_401_UNAUTHORIZED,
+#                 )
+
+#             # -----------------------------------------
+#             # 5. Check server-side session expiry
+#             # -----------------------------------------
+
+#             if session.expires_at <= timezone.now():
+
+#                 session.is_active = False
+#                 session.logout_time = timezone.now()
+#                 session.save(
+#                     update_fields=[
+#                         "is_active",
+#                         "logout_time",
+#                     ]
+#                 )
+
+#                 return Response(
+#                     {"detail": "Session expired"},
+#                     status=status.HTTP_401_UNAUTHORIZED,
+#                 )
+
+#         except Exception:
+#             return Response(
+#                 {"detail": "Invalid or expired refresh token"},
+#                 status=status.HTTP_401_UNAUTHORIZED,
+#             )
+
+#         # -----------------------------------------
+#         # 6. Let SimpleJWT perform the refresh
+#         # -----------------------------------------
+
+#         serializer = self.get_serializer(data={"refresh": refresh_token})
+
+#         serializer.is_valid(raise_exception=True)
+
+#         access_token = serializer.validated_data["access"]
+
+#         # -----------------------------------------
+#         # 7. Get rotated refresh token
+#         # -----------------------------------------
+
+#         new_refresh_token = serializer.validated_data.get("refresh")
+
+#         # -----------------------------------------
+#         # 8. Return response
+#         # -----------------------------------------
+
+#         response = Response(
+#             {
+#                 "message": "Token refreshed",
+#                 "session_expires_at": session.expires_at.isoformat(),
+#             },
+#             status=status.HTTP_200_OK,
+#         )
+
+#         # -----------------------------------------
+#         # 9. Set new access token
+#         # -----------------------------------------
+
+#         response.set_cookie(
+#             key="access_token",
+#             value=access_token,
+#             httponly=True,
+#             secure=False,  # True in production
+#             samesite="Lax",
+#         )
+
+#         # -----------------------------------------
+#         # 10. Set rotated refresh token
+#         # -----------------------------------------
+
+#         if new_refresh_token:
+#             response.set_cookie(
+#                 key="refresh_token",
+#                 value=new_refresh_token,
+#                 httponly=True,
+#                 secure=False,  # True in production
+#                 samesite="Lax",
+#             )
+
+#         return response
 
 
 # from rest_framework_simplejwt.views import TokenRefreshView
@@ -680,39 +1014,77 @@ class CustomTokenRefreshView(TokenRefreshView):
 # ----------------- VALIDATE -----------------
 
 
+# @api_view(["GET"])
+# def validate_token(request):
+#     from rest_framework_simplejwt.tokens import AccessToken
+#     from setup.models import User
+
+#     token = request.COOKIES.get("access_token")
+#     if not token:
+#         return Response({"detail": "Missing token"}, status=401)
+
+#     try:
+#         payload = AccessToken(token)
+#         user = User.objects.get(id=payload["user_id"])
+#         return Response(
+#             {
+#                 "user": {
+#                     "id": user.id,
+#                     "username": user.username,
+#                     "email": user.email,
+#                     "role": user.role,
+#                     "usertype": user.userType,
+#                     "fullName": user.fullName,
+#                     "staffNo": user.staffNo,
+#                     "passport": (
+#                         request.build_absolute_uri(user.passport.url)
+#                         if user.passport
+#                         else None
+#                     ),
+#                     "hub_name": user.hub_name_id,
+#                 }
+#             }
+#         )
+#     except:
+#         return Response({"detail": "Invalid or expired token"}, status=401)
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+
+
 @api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def validate_token(request):
-    from rest_framework_simplejwt.tokens import AccessToken
-    from setup.models import User
+    user = request.user
+    session = getattr(request, "user_session", None)
 
-    token = request.COOKIES.get("access_token")
-    if not token:
-        return Response({"detail": "Missing token"}, status=401)
-
-    try:
-        payload = AccessToken(token)
-        user = User.objects.get(id=payload["user_id"])
+    if not session:
         return Response(
-            {
-                "user": {
-                    "id": user.id,
-                    "username": user.username,
-                    "email": user.email,
-                    "role": user.role,
-                    "usertype": user.userType,
-                    "fullName": user.fullName,
-                    "staffNo": user.staffNo,
-                    "passport": (
-                        request.build_absolute_uri(user.passport.url)
-                        if user.passport
-                        else None
-                    ),
-                    "hub_name": user.hub_name_id,
-                }
-            }
+            {"detail": "Session not found"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
-    except:
-        return Response({"detail": "Invalid or expired token"}, status=401)
+
+    return Response(
+        {
+            "user": {
+                "id": str(user.id),
+                "username": user.username,
+                "email": user.email,
+                "role": user.role,
+                "usertype": user.userType,
+                "fullName": user.fullName,
+                "staffNo": user.staffNo,
+                "passport": (
+                    request.build_absolute_uri(user.passport.url)
+                    if user.passport
+                    else None
+                ),
+                "hub_name": user.hub_name_id,
+                "session_expires_at": session.expires_at.isoformat(),
+            }
+        }
+    )
 
 
 class ProtectedEndpointView(APIView):
@@ -1249,3 +1621,369 @@ class NotificationLogListView(generics.ListAPIView):
     serializer_class = NotificationLogSerializer
 
     queryset = NotificationLog.objects.all().order_by("-created_at")
+
+
+class NotificationTemplateViewSet(AuditedModelViewSet):
+
+    queryset = NotificationTemplate.objects.select_related("notification_type").all()
+
+    serializer_class = NotificationTemplateSerializer
+
+    permission_classes = [IsAdminUser]
+
+    http_method_names = [
+        "get",
+        "patch",
+        "post",
+        "head",
+        "options",
+    ]
+
+
+from django.db import transaction
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+
+from setup.models import User, Auditlog
+
+
+class GeneralNotificationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request):
+
+        user_ids = request.data.get("user_ids", [])
+        message = request.data.get("message", "").strip()
+
+        # ==========================================
+        # 1. VALIDATE MESSAGE
+        # ==========================================
+
+        if not message:
+            return Response(
+                {"message": "Notification message is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ==========================================
+        # 2. VALIDATE RECIPIENTS
+        # ==========================================
+
+        if not user_ids or not isinstance(user_ids, list):
+            return Response(
+                {"message": "At least one recipient is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ==========================================
+        # 3. GET ACTIVE USERS
+        # ==========================================
+
+        users = User.objects.filter(
+            id__in=user_ids,
+            is_active=True,
+        )
+
+        if not users.exists():
+            return Response(
+                {"message": "No active recipients found."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ==========================================
+        # 4. SEND NOTIFICATION
+        # ==========================================
+
+        sent_to = 0
+        failed = 0
+
+        for user in users:
+
+            context = {
+                "receiver": user.fullName or user.email,
+                "message": message,
+            }
+
+            sms_recipients = []
+
+            if user.mobileNo:
+                sms_recipients.append(user.mobileNo)
+
+            try:
+                send_notification(
+                    notification_type="GENERAL_NOTIFICATION",
+                    context=context,
+                    receiver_email=user.email,
+                    receiver_phone=user.mobileNo,
+                    sms_recipients=sms_recipients,
+                )
+
+                sent_to += 1
+
+            except Exception:
+                failed += 1
+
+        # ==========================================
+        # 5. AUDIT
+        # ==========================================
+
+        Auditlog.objects.create(
+            user=request.user,
+            action="GENERAL_NOTIFICATION",
+            model="Notification",
+            object_id="GENERAL",
+            after={
+                "recipients": [str(user.id) for user in users],
+                "recipient_count": users.count(),
+                "message": message,
+            },
+            ip_address=get_client_ip(request),
+        )
+
+        return Response(
+            {
+                "message": "General notification processed successfully.",
+                "recipients": users.count(),
+                "processed": sent_to,
+                "failed": failed,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class CampaignNotificationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request):
+
+        audience = request.data.get("audience")
+        role = request.data.get("role")
+        user_ids = request.data.get("user_ids", [])
+        message = request.data.get("message", "").strip()
+
+        # ==========================================
+        # 1. VALIDATE MESSAGE
+        # ==========================================
+
+        if not message:
+            return Response(
+                {"message": "Campaign message is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ==========================================
+        # 2. VALIDATE AUDIENCE
+        # ==========================================
+
+        allowed_audiences = [
+            "ALL",
+            "ALL_CUSTOMERS",
+            "ALL_STAFF",
+            "ROLE",
+            "SELECTED",
+        ]
+
+        if audience not in allowed_audiences:
+            return Response(
+                {"message": "Invalid campaign audience."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ==========================================
+        # 3. BUILD RECIPIENT QUERY
+        # ==========================================
+
+        users = User.objects.filter(is_active=True)
+
+        if audience == "ALL_CUSTOMERS":
+
+            users = users.filter(userType=User.CUSTOMER)
+
+        elif audience == "ALL_STAFF":
+
+            users = users.filter(userType=User.STAFF)
+
+        elif audience == "ROLE":
+
+            if not role:
+                return Response(
+                    {"message": "Role is required for role-based campaigns."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            users = users.filter(role=role)
+
+        elif audience == "SELECTED":
+
+            if not user_ids or not isinstance(user_ids, list):
+                return Response(
+                    {"message": "Select at least one user."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            users = users.filter(id__in=user_ids)
+
+        # ==========================================
+        # 4. CHECK RECIPIENTS
+        # ==========================================
+
+        if not users.exists():
+            return Response(
+                {"message": "No active recipients found for this campaign."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ==========================================
+        # 5. SEND CAMPAIGN
+        # ==========================================
+
+        processed = 0
+        failed = 0
+
+        for user in users:
+
+            context = {
+                "receiver": user.fullName or user.email,
+                "message": message,
+            }
+
+            sms_recipients = []
+
+            if user.mobileNo:
+                sms_recipients.append(user.mobileNo)
+
+            try:
+
+                send_notification(
+                    notification_type="CAMPAIGN",
+                    context=context,
+                    receiver_email=user.email,
+                    receiver_phone=user.mobileNo,
+                    sms_recipients=sms_recipients,
+                )
+
+                processed += 1
+
+            except Exception:
+                failed += 1
+
+        # ==========================================
+        # 6. AUDIT
+        # ==========================================
+
+        Auditlog.objects.create(
+            user=request.user,
+            action="CAMPAIGN_NOTIFICATION",
+            model="Notification",
+            object_id="CAMPAIGN",
+            after={
+                "audience": audience,
+                "role": role,
+                "recipient_count": users.count(),
+                "message": message,
+            },
+            ip_address=get_client_ip(request),
+        )
+
+        return Response(
+            {
+                "message": "Campaign processed successfully.",
+                "audience": audience,
+                "recipients": users.count(),
+                "processed": processed,
+                "failed": failed,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SendGeneralNotificationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        recipient_type = request.data.get("recipient_type")
+        role = request.data.get("role")
+        hub_id = request.data.get("hub_id")
+        user_ids = request.data.get("user_ids", [])
+
+        if not recipient_type:
+            return Response(
+                {"message": "Recipient type is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        allowed_types = [
+            "ALL",
+            "CUSTOMERS",
+            "STAFF",
+            "ROLE",
+            "HUB",
+            "USERS",
+        ]
+
+        if recipient_type not in allowed_types:
+            return Response(
+                {"message": "Invalid recipient type."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if recipient_type == "ROLE" and not role:
+            return Response(
+                {"message": "Role is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if recipient_type == "HUB" and not hub_id:
+            return Response(
+                {"message": "Hub is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if recipient_type == "USERS" and not user_ids:
+            return Response(
+                {"message": "At least one user must be selected."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        users = get_notification_recipients(
+            recipient_type=recipient_type,
+            role=role,
+            hub_id=hub_id,
+            user_ids=user_ids,
+        )
+
+        if not users.exists():
+            return Response(
+                {"message": "No active users found for the selected recipients."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        context = {
+            "subject": request.data.get("subject", ""),
+            "message": request.data.get("message", ""),
+            "sender": request.user.fullName or request.user.get_user_fullname,
+            "sender_email": request.user.email,
+        }
+
+        notification_type = request.data.get(
+            "notification_type",
+            "GENERAL_NOTIFICATION",
+        )
+
+        result = send_bulk_notification(
+            notification_type=notification_type,
+            users=users,
+            context=context,
+        )
+
+        return Response(
+            {
+                "message": "Notification processing completed.",
+                **result,
+            },
+            status=status.HTTP_200_OK,
+        )

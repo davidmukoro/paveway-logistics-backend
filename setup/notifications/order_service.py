@@ -10,9 +10,9 @@ def send_order_notification(
     *,
     notification_type,
     items,
-    email_subject,
-    email_template,
-    sms_message,
+    email_subject=None,
+    email_template=None,
+    sms_message=None,
     extra_context=None,
 ):
     """

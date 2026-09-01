@@ -103,7 +103,9 @@ urlpatterns = router.urls + [
     path("warehouse/scan/", WarehouseScanView.as_view()),
     path("orderStatus/", OrderByStatusView.as_view()),
     path("dispatchedOrder/", DispatchedOrderView.as_view()),
-    path("dispatch/pickup/", dispatcherPickupView.as_view()),
+    path(
+        "dispatch/pickup/", dispatcherPickupView.as_view()
+    ),  # transfrom from whse to pickup
     path("pickup-summary/", DispatchSummaryView.as_view()),
     path("validate-barcode/", ValidateBarcodeView.as_view()),
     path("validate-hub-barcode/", ValidateHubBarcodeView.as_view()),

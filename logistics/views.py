@@ -346,69 +346,84 @@ def create_order_with_wallet_deduction(request):
             # 4. SEND ORDER CREATED NOTIFICATION
             # =====================================================
 
+            # items = list(order.items.all())
+
+            # # Group items by receiver
+            # grouped_items = defaultdict(list)
+
+            # for item in items:
+
+            #     receiver_key = (
+            #         item.receiver_email or "",
+            #         item.receiver_phone or "",
+            #     )
+
+            #     grouped_items[receiver_key].append(item)
+
+            # for (
+            #     receiver_email,
+            #     receiver_phone,
+            # ), receiver_items in grouped_items.items():
+
+            #     first_item = receiver_items[0]
+
+            #     sms_recipients = list(
+            #         dict.fromkeys(
+            #             phone.strip()
+            #             for phone in [
+            #                 first_item.receiver_phone,
+            #                 first_item.sender_phone,
+            #             ]
+            #             if phone and phone.strip()
+            #         )
+            #     )
+
+            #     notification_context = {
+            #         "receiver": first_item.receiver_name,
+            #         "sender": first_item.sender_name,
+            #         "order": order,
+            #         "items": receiver_items,
+            #         "order_no": order.order_no,
+            #         "vendor_order_no": order.vendor_order_no,
+            #         "year": timezone.now().year,
+            #     }
+
+            #     email_subject = f"Order Created - {order.order_no}"
+
+            #     sms_message = (
+            #         f"Your Paveway order {order.order_no} has been created "
+            #         f"successfully. We will notify you as it progresses."
+            #     )
+
+            #     transaction.on_commit(
+            #         lambda context=notification_context, receiver=receiver_email, phone=receiver_phone, cc=first_item.sender_email, sms_numbers=sms_recipients, subject=email_subject, message=sms_message: send_notification(
+            #             notification_type="ORDER_CREATED",
+            #             context=context,
+            #             receiver_email=receiver,
+            #             receiver_phone=phone,
+            #             cc_email=cc,
+            #             sms_recipients=sms_numbers,
+            #             email_subject=subject,
+            #             email_template="emails/order_created.html",
+            #             sms_message=message,
+            #         )
+            #     )
+            # =====================================================
+            # 4. SEND ORDER CREATED NOTIFICATION
+            # =====================================================
+
             items = list(order.items.all())
 
-            # Group items by receiver
-            grouped_items = defaultdict(list)
-
-            for item in items:
-
-                receiver_key = (
-                    item.receiver_email or "",
-                    item.receiver_phone or "",
-                )
-
-                grouped_items[receiver_key].append(item)
-
-            for (
-                receiver_email,
-                receiver_phone,
-            ), receiver_items in grouped_items.items():
-
-                first_item = receiver_items[0]
-
-                sms_recipients = list(
-                    dict.fromkeys(
-                        phone.strip()
-                        for phone in [
-                            first_item.receiver_phone,
-                            first_item.sender_phone,
-                        ]
-                        if phone and phone.strip()
-                    )
-                )
-
-                notification_context = {
-                    "receiver": first_item.receiver_name,
-                    "sender": first_item.sender_name,
-                    "order": order,
-                    "items": receiver_items,
-                    "order_no": order.order_no,
-                    "vendor_order_no": order.vendor_order_no,
+            send_order_notification(
+                notification_type="ORDER_CREATED",
+                items=items,
+                email_subject=None,
+                email_template=None,
+                sms_message=None,
+                extra_context={
                     "year": timezone.now().year,
-                }
-
-                email_subject = f"Order Created - {order.order_no}"
-
-                sms_message = (
-                    f"Your Paveway order {order.order_no} has been created "
-                    f"successfully. We will notify you as it progresses."
-                )
-
-                transaction.on_commit(
-                    lambda context=notification_context, receiver=receiver_email, phone=receiver_phone, cc=first_item.sender_email, sms_numbers=sms_recipients, subject=email_subject, message=sms_message: send_notification(
-                        notification_type="ORDER_CREATED",
-                        context=context,
-                        receiver_email=receiver,
-                        receiver_phone=phone,
-                        cc_email=cc,
-                        sms_recipients=sms_numbers,
-                        email_subject=subject,
-                        email_template="emails/order_created.html",
-                        sms_message=message,
-                    )
-                )
-
+                },
+            )
             # =====================================================
             # 4. AUDIT ORDER CREATION
             # =====================================================
@@ -2834,23 +2849,280 @@ class UpdateDispatchStatus(APIView):
 #                 "message": "Dispatch started successfully",
 #             }
 #         )
+# class StartDispatchSession(APIView):
+
+#     permission_classes = [IsAuthenticated]
+
+#     def post(self, request):
+
+#         # prevent duplicate active session
+#         session = DispatchSession.objects.filter(
+#             agent=request.user, status="ACTIVE"
+#         ).first()
+
+#         if session:
+#             return Response(
+#                 {"session_id": session.id, "message": "Session already active"}
+#             )
+
+#         # get latest vehicle assignment
+#         dispatch = (
+#             Dispatch.objects.filter(agent=request.user)
+#             .select_related("vehicle")
+#             .order_by("-assigned_at")
+#             .first()
+#         )
+
+#         # create session
+#         session = DispatchSession.objects.create(
+#             agent=request.user,
+#             vehicle=dispatch.vehicle if dispatch else None,
+#             status="ACTIVE",
+#         )
+
+#         # ==================================
+#         # CREATE DELIVERY STOPS
+#         # ==================================
+
+#         parcels = Dispatch.objects.filter(
+#             agent=request.user,
+#             status__in=[
+#                 "PICKED_UP",
+#                 "IN_TRANSIT",
+#                 "OUT_FOR_DELIVERY",
+#                 "PARTIAL",
+#                 "ISSUE",
+#                 "RETURNED",
+#             ],
+#         ).select_related("order_item")
+
+#         grouped_stops = defaultdict(list)
+
+#         for parcel in parcels:
+
+#             item = parcel.order_item
+
+#             key = (
+#                 item.receiver_email,
+#                 item.delivery_address,
+#             )
+
+#             grouped_stops[key].append(item)
+
+#         stops_created = 0
+
+#         for index, ((email, address), items) in enumerate(
+#             grouped_stops.items(), start=1
+#         ):
+
+#             first_item = items[0]
+
+#             if not first_item.latitude or not first_item.longitude:
+#                 continue
+
+#             stop = DispatchStop.objects.create(
+#                 session=session,
+#                 customer_name=first_item.receiver_name,
+#                 address=first_item.delivery_address,
+#                 latitude=first_item.latitude,
+#                 longitude=first_item.longitude,
+#                 sequence=index,
+#             )
+
+#             dispatch_items = Dispatch.objects.filter(order_item__in=items)
+
+#             stop.dispatches.set(dispatch_items)
+#             stops_created += 1
+
+#         # ==================================
+#         # GET DRIVER CURRENT LOCATION
+#         # ==================================
+
+#         current_location = AgentCurrentLocation.objects.filter(
+#             agent=request.user
+#         ).first()
+
+#         if current_location is None:
+#             return Response(
+#                 {"message": "Driver current location not found."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         # ==================================
+#         # GENERATE PLANNED ROUTES
+#         # ==================================
+
+#         current_location = AgentCurrentLocation.objects.filter(
+#             agent=request.user
+#         ).first()
+
+#         if current_location:
+
+#             origin_lat = current_location.latitude
+#             origin_lng = current_location.longitude
+
+#             stops = session.stops.order_by("sequence")
+
+#             for stop in stops:
+
+#                 route = get_route(
+#                     origin_lat,
+#                     origin_lng,
+#                     stop.latitude,
+#                     stop.longitude,
+#                 )
+#                 if not route:
+#                     continue
+
+#                 route_points = []
+
+#                 for index, point in enumerate(route, start=1):
+
+#                     route_points.append(
+#                         DispatchRoutePoint(
+#                             stop=stop,
+#                             sequence=index,
+#                             latitude=point["lat"],
+#                             longitude=point["lng"],
+#                         )
+#                     )
+
+#                 DispatchRoutePoint.objects.bulk_create(route_points)
+
+#                 # Next stop starts where the previous stop ended
+#                 origin_lat = stop.latitude
+#                 origin_lng = stop.longitude
+
+#         # # ==================================
+#         # # MOVE PARCELS TO IN_TRANSIT
+#         # # ==================================
+
+#         # # updated = parcels.update(status="IN_TRANSIT")
+#         # updated = parcels.filter(
+#         #     status__in=[
+#         #         "PICKED_UP",
+#         #     ]
+#         # ).update(status="IN_TRANSIT")
+#         # ==========================================
+#         # MOVE PARCELS TO IN_TRANSIT
+#         # ==========================================
+
+#         transit_parcels = list(
+#             parcels.filter(status="PICKED_UP").select_related(
+#                 "order_item",
+#                 "order_item__order",
+#             )
+#         )
+
+#         updated = 0
+
+#         if transit_parcels:
+
+#             # --------------------------------------
+#             # Update dispatch status
+#             # --------------------------------------
+
+#             Dispatch.objects.filter(
+#                 id__in=[parcel.id for parcel in transit_parcels]
+#             ).update(status="IN_TRANSIT")
+
+#             updated = len(transit_parcels)
+
+#             # --------------------------------------
+#             # Update OrderItem status
+#             # --------------------------------------
+
+#             OrderItem.objects.filter(
+#                 id__in=[parcel.order_item.id for parcel in transit_parcels]
+#             ).update(flag="IN_TRANSIT")
+
+#             # --------------------------------------
+#             # Create tracking
+#             # --------------------------------------
+
+#             for parcel in transit_parcels:
+
+#                 create_tracking(
+#                     order_item=parcel.order_item,
+#                     stage="IN_TRANSIT",
+#                     user=request.user,
+#                     remark="Item is now in transit",
+#                 )
+
+#             # --------------------------------------
+#             # Send notification
+#             # --------------------------------------
+
+
+#             send_order_notification(
+#                 notification_type="ORDER_IN_TRANSIT",
+#                 items=[parcel.order_item for parcel in transit_parcels],
+#                 email_subject="Your Paveway Order Is Now In Transit",
+#                 email_template="emails/order_status_update.html",
+#                 sms_message=(
+#                     "Your Paveway order is now in transit. "
+#                     "Please track your delivery for updates."
+#                 ),
+#                 extra_context={
+#                     "status": "IN_TRANSIT",
+#                     "agent_name": request.user.fullName,
+#                     "agent_phone": request.user.mobileNo,
+#                 },
+#             )
+#         return Response(
+#             {
+#                 "session_id": session.id,
+#                 "vehicle": (
+#                     dispatch.vehicle.vehicleNo
+#                     if dispatch and dispatch.vehicle
+#                     else None
+#                 ),
+#                 "parcels_activated": updated,
+#                 "stops_created": stops_created,
+#                 "message": "Dispatch started successfully",
+#             }
+#         )
 class StartDispatchSession(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request):
 
-        # prevent duplicate active session
+        # ==================================
+        # 1. CHECK DRIVER CURRENT LOCATION
+        # ==================================
+
+        current_location = AgentCurrentLocation.objects.filter(
+            agent=request.user
+        ).first()
+
+        if current_location is None:
+            return Response(
+                {"message": "Driver current location not found."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ==================================
+        # 2. PREVENT DUPLICATE ACTIVE SESSION
+        # ==================================
+
         session = DispatchSession.objects.filter(
             agent=request.user, status="ACTIVE"
         ).first()
 
         if session:
             return Response(
-                {"session_id": session.id, "message": "Session already active"}
+                {
+                    "session_id": session.id,
+                    "message": "Session already active",
+                }
             )
 
-        # get latest vehicle assignment
+        # ==================================
+        # 3. GET LATEST VEHICLE ASSIGNMENT
+        # ==================================
+
         dispatch = (
             Dispatch.objects.filter(agent=request.user)
             .select_related("vehicle")
@@ -2858,7 +3130,10 @@ class StartDispatchSession(APIView):
             .first()
         )
 
-        # create session
+        # ==================================
+        # 4. CREATE SESSION
+        # ==================================
+
         session = DispatchSession.objects.create(
             agent=request.user,
             vehicle=dispatch.vehicle if dispatch else None,
@@ -2866,7 +3141,7 @@ class StartDispatchSession(APIView):
         )
 
         # ==================================
-        # CREATE DELIVERY STOPS
+        # 5. CREATE DELIVERY STOPS
         # ==================================
 
         parcels = Dispatch.objects.filter(
@@ -2884,7 +3159,6 @@ class StartDispatchSession(APIView):
         grouped_stops = defaultdict(list)
 
         for parcel in parcels:
-
             item = parcel.order_item
 
             key = (
@@ -2902,7 +3176,7 @@ class StartDispatchSession(APIView):
 
             first_item = items[0]
 
-            if not first_item.latitude or not first_item.longitude:
+            if first_item.latitude is None or first_item.longitude is None:
                 continue
 
             stop = DispatchStop.objects.create(
@@ -2917,79 +3191,51 @@ class StartDispatchSession(APIView):
             dispatch_items = Dispatch.objects.filter(order_item__in=items)
 
             stop.dispatches.set(dispatch_items)
+
             stops_created += 1
 
         # ==================================
-        # GET DRIVER CURRENT LOCATION
+        # 6. GENERATE PLANNED ROUTES
         # ==================================
 
-        current_location = AgentCurrentLocation.objects.filter(
-            agent=request.user
-        ).first()
+        origin_lat = current_location.latitude
+        origin_lng = current_location.longitude
 
-        if current_location is None:
-            return Response(
-                {"message": "Driver current location not found."},
-                status=status.HTTP_400_BAD_REQUEST,
+        stops = session.stops.order_by("sequence")
+
+        for stop in stops:
+
+            route = get_route(
+                origin_lat,
+                origin_lng,
+                stop.latitude,
+                stop.longitude,
             )
 
-        # ==================================
-        # GENERATE PLANNED ROUTES
-        # ==================================
+            if not route:
+                continue
 
-        current_location = AgentCurrentLocation.objects.filter(
-            agent=request.user
-        ).first()
+            route_points = []
 
-        if current_location:
+            for index, point in enumerate(route, start=1):
 
-            origin_lat = current_location.latitude
-            origin_lng = current_location.longitude
-
-            stops = session.stops.order_by("sequence")
-
-            for stop in stops:
-
-                route = get_route(
-                    origin_lat,
-                    origin_lng,
-                    stop.latitude,
-                    stop.longitude,
-                )
-                if not route:
-                    continue
-
-                route_points = []
-
-                for index, point in enumerate(route, start=1):
-
-                    route_points.append(
-                        DispatchRoutePoint(
-                            stop=stop,
-                            sequence=index,
-                            latitude=point["lat"],
-                            longitude=point["lng"],
-                        )
+                route_points.append(
+                    DispatchRoutePoint(
+                        stop=stop,
+                        sequence=index,
+                        latitude=point["lat"],
+                        longitude=point["lng"],
                     )
+                )
 
-                DispatchRoutePoint.objects.bulk_create(route_points)
+            DispatchRoutePoint.objects.bulk_create(route_points)
 
-                # Next stop starts where the previous stop ended
-                origin_lat = stop.latitude
-                origin_lng = stop.longitude
+            # Next stop starts where previous stop ended
+            origin_lat = stop.latitude
+            origin_lng = stop.longitude
 
-        # # ==================================
-        # # MOVE PARCELS TO IN_TRANSIT
-        # # ==================================
-
-        # # updated = parcels.update(status="IN_TRANSIT")
-        # updated = parcels.filter(
-        #     status__in=[
-        #         "PICKED_UP",
-        #     ]
-        # ).update(status="IN_TRANSIT")
         # ==========================================
-        # MOVE PARCELS TO IN_TRANSIT
+        # 7. MOVE PICKED-UP PARCELS TO IN_TRANSIT
         # ==========================================
 
         transit_parcels = list(
@@ -3004,7 +3250,7 @@ class StartDispatchSession(APIView):
         if transit_parcels:
 
             # --------------------------------------
-            # Update dispatch status
+            # Update Dispatch status
             # --------------------------------------
 
             Dispatch.objects.filter(
@@ -3035,24 +3281,23 @@ class StartDispatchSession(APIView):
                 )
 
             # --------------------------------------
-            # Send notification
+            # Send IN_TRANSIT notification
             # --------------------------------------
 
             send_order_notification(
                 notification_type="ORDER_IN_TRANSIT",
                 items=[parcel.order_item for parcel in transit_parcels],
-                email_subject="Your Paveway Order Is Now In Transit",
-                email_template="emails/order_status_update.html",
-                sms_message=(
-                    "Your Paveway order is now in transit. "
-                    "Please track your delivery for updates."
-                ),
                 extra_context={
                     "status": "IN_TRANSIT",
                     "agent_name": request.user.fullName,
                     "agent_phone": request.user.mobileNo,
                 },
             )
+
+        # ==================================
+        # 8. RESPONSE
+        # ==================================
+
         return Response(
             {
                 "session_id": session.id,
@@ -4530,7 +4775,7 @@ class UpdateDeliveryStatusView(APIView):
                 ),
             },
             "PARTIAL": {
-                "type": "ORDER_PARTIAL",
+                "type": "ORDER_PART_DELIVERED",
                 "subject": "Update on Your Paveway Order",
                 "template": "emails/order_status_update.html",
                 "sms": (
